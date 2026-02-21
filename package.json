@@ -1,0 +1,47 @@
+{
+  "name": "starter-app-template",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "test:drill-focus": "ts-node scripts/test-drill-focus.ts",
+    "functions:enforce-config": "tsx scripts/enforce-functions-config.ts",
+    "functions:reset": "tsx scripts/functions-reset.ts",
+    "functions:deploy:all": "npm run functions:enforce-config && supabase functions deploy ai-analyze-hand --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-bootstrap-drill-queue --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-ocr-hand --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-parse-hand-text --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-summarize-leaks --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-generate-drill --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-generate-table-drill --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-grade-drill --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-submit-table-drill-result --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-daily-checkin --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-generate-action-plan --project-ref wveutrtikaxcxutnnucq && supabase functions deploy ai-sync-action-plan --project-ref wveutrtikaxcxutnnucq"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "expo": "~54.0.32",
+    "expo-av": "~16.0.8",
+    "expo-build-properties": "~1.0.10",
+    "expo-clipboard": "~8.0.8",
+    "expo-constants": "~18.0.13",
+    "expo-crypto": "~14.0.1",
+    "expo-image-picker": "~17.0.10",
+    "expo-linking": "~8.0.11",
+    "expo-router": "~6.0.22",
+    "expo-speech": "~14.0.8",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-get-random-values": "^1.11.0",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-url-polyfill": "^2.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@types/node": "^25.2.3",
+    "@types/react": "~19.1.10",
+    "dotenv": "^17.3.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.3.3"
+  },
+  "private": true
+}
