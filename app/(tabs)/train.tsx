@@ -9,26 +9,34 @@ import {
   TouchableWithoutFeedback,
   View,
   useWindowDimensions,
+  DimensionValue,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ScreenWrapper } from '../../components/ScreenWrapper';
+// Удален импорт ScreenWrapper - он ломал верстку!
+import { normalizeLeakTag } from '../../lib/leakCatalog';
 import { AppText } from '../../components/AppText';
+import { Card } from '../../components/Card';
 import { supabase } from '../../lib/supabase';
 import { ensureSession } from '../../lib/ensureSession';
 import { callEdge } from '../../lib/edge';
-import type { TableDrillScenario, TableDrillCorrectAction } from '../../types/drill';
+import type { TableDrillScenario, TableDrillCorrectAction, RaiseSizingOption } from '../../types/drill';
 import { DrillQueueRow } from '../../types/database';
 
-// ─── COLOR THEME ─────────────────────────────────────────────────────────────
-const FELT_EDGE    = '#14382A';
-const FELT_CENTER  = '#1A4A35';
-const RAIL_BG      = '#110A03';
-const RAIL_TRIM    = '#261208';
-const RAIL_LIGHT   = '#3A1C0A';
-const ROOM_BG      = '#06070C';
-// Actual panel content height: paddingTop 8 + infoRow 20 + gap 6 + buttons 46 + paddingBottom 6 = 86
-const CONTROL_PANEL_HEIGHT = 86;
+// ─── GG POKER STYLE THEME ──────────────────────────────────────────────────
+const THEME = {
+  BG_MAIN: '#1B1C22',
+  FELT_BASE: '#0D4232',
+  FELT_CENTER: '#145945',
+  RAIL_OUTER: '#111216',
+  RAIL_INNER: '#2A2C35',
+  PANEL_BG: '#111216',
+  BTN_FOLD: '#D92D20',
+  BTN_CALL: '#059669',
+  BTN_RAISE: '#D97706',
+  BTN_GREY: '#374151',
+};
 
 const SUIT_SYMBOLS: Record<string, string> = { s: '♠', h: '♥', d: '♦', c: '♣' };
 const RED_SUITS = ['h', 'd'];
@@ -45,267 +53,124 @@ function parseCardCode(code: string | null | undefined): { rank: string; suit: s
   return { rank, suit };
 }
 
+const SESSION_TARGET_COUNT = 5;
+type SessionHistoryEntry = { is_correct: boolean; drill_type: string; difficulty?: string };
+
 type CardViewSize = 'sm' | 'md' | 'lg';
 const CARD_DIMENSIONS: Record<CardViewSize, {
   width: number; height: number;
   cornerRankSize: number; cornerSuitSize: number;
   centerSuitSize: number; radius: number;
 }> = {
-  sm: { width: 32,  height: 46,  cornerRankSize: 10, cornerSuitSize: 8,  centerSuitSize: 18, radius: 3 },
-  md: { width: 44,  height: 62,  cornerRankSize: 13, cornerSuitSize: 10, centerSuitSize: 26, radius: 5 },
-  lg: { width: 54,  height: 76,  cornerRankSize: 16, cornerSuitSize: 12, centerSuitSize: 33, radius: 6 },
+  sm: { width: 32, height: 46, cornerRankSize: 10, cornerSuitSize: 8, centerSuitSize: 18, radius: 3 },
+  md: { width: 42, height: 60, cornerRankSize: 13, cornerSuitSize: 10, centerSuitSize: 26, radius: 4 },
+  lg: { width: 56, height: 80, cornerRankSize: 18, cornerSuitSize: 14, centerSuitSize: 36, radius: 6 },
 };
-const CARD_MD_HEIGHT = CARD_DIMENSIONS.md.height;
 
-function CardView({
-  code,
-  size = 'md',
-  faceDown = false,
-}: {
-  code?: string | null;
-  size?: CardViewSize;
-  faceDown?: boolean;
-}) {
+function CardView({ code, size = 'md', faceDown = false }: { code?: string | null; size?: CardViewSize; faceDown?: boolean }) {
   const dim = CARD_DIMENSIONS[size];
   const parsed = faceDown ? null : parseCardCode(code ?? null);
   const isRed = parsed && RED_SUITS.includes(parsed.suit);
-  const suitColor = isRed ? '#D63031' : '#1A1A2E';
+  const suitColor = isRed ? '#EF4444' : '#111827';
 
   if (!parsed && !faceDown) {
-    return (
-      <View style={[cardStyles.slotEmpty, { width: dim.width, height: dim.height, borderRadius: dim.radius }]} />
-    );
+    return <View style={[cardStyles.slotEmpty, { width: dim.width, height: dim.height, borderRadius: dim.radius }]} />;
   }
 
   if (faceDown) {
     return (
       <View style={[cardStyles.faceDown, { width: dim.width, height: dim.height, borderRadius: dim.radius }]}>
         <View style={[cardStyles.backInnerBorder, { borderRadius: Math.max(1, dim.radius - 1) }]} />
-        <View style={cardStyles.backDiamondA} />
-        <View style={cardStyles.backDiamondB} />
       </View>
     );
   }
 
   return (
     <View style={[cardStyles.cardFaceUp, { width: dim.width, height: dim.height, borderRadius: dim.radius }]}>
-      {/* Top-left corner: rank only */}
       <View style={cardStyles.cornerTL}>
-        <AppText variant="body" style={[cardStyles.cornerRankText, { fontSize: dim.cornerRankSize, color: suitColor }]}>
-          {RANK_DISPLAY[parsed!.rank]}
-        </AppText>
+        <AppText variant="body" style={[cardStyles.cornerRankText, { fontSize: dim.cornerRankSize, color: suitColor }]}>{RANK_DISPLAY[parsed!.rank]}</AppText>
       </View>
-
-      {/* Bottom-right corner: same rank, no rotation (rotating 9→6 causes confusion) */}
       <View style={cardStyles.cornerBR}>
-        <AppText variant="body" style={[cardStyles.cornerRankText, { fontSize: dim.cornerRankSize, color: suitColor }]}>
-          {RANK_DISPLAY[parsed!.rank]}
-        </AppText>
+        <AppText variant="body" style={[cardStyles.cornerRankText, { fontSize: dim.cornerRankSize, color: suitColor }]}>{RANK_DISPLAY[parsed!.rank]}</AppText>
       </View>
-
-      {/* Center: large suit symbol only */}
       <View style={cardStyles.centerSuit}>
-        <AppText variant="body" style={[cardStyles.suitCenterText, { fontSize: dim.centerSuitSize, color: suitColor }]}>
-          {SUIT_SYMBOLS[parsed!.suit]}
-        </AppText>
+        <AppText variant="body" style={[cardStyles.suitCenterText, { fontSize: dim.centerSuitSize, color: suitColor }]}>{SUIT_SYMBOLS[parsed!.suit]}</AppText>
       </View>
     </View>
   );
 }
 
 const cardStyles = StyleSheet.create({
-  slotEmpty: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-  },
-  cardFaceUp: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 0.5,
-    borderColor: 'rgba(0,0,0,0.14)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 7,
-    overflow: 'hidden',
-  },
-  faceDown: {
-    backgroundColor: '#0F1E3D',
-    borderWidth: 1,
-    borderColor: 'rgba(80,110,200,0.35)',
-    overflow: 'hidden',
-  },
-  backInnerBorder: {
-    position: 'absolute',
-    top: 3, left: 3, right: 3, bottom: 3,
-    borderWidth: 1,
-    borderColor: 'rgba(90,130,220,0.4)',
-    backgroundColor: '#142452',
-  },
-  backDiamondA: {
-    position: 'absolute',
-    top: -40, left: -10, right: -10, bottom: -40,
-    borderWidth: 1,
-    borderColor: 'rgba(120,160,240,0.07)',
-    transform: [{ rotate: '45deg' }, { scaleX: 0.55 }],
-  },
-  backDiamondB: {
-    position: 'absolute',
-    top: -20, left: -20, right: -20, bottom: -20,
-    borderWidth: 1,
-    borderColor: 'rgba(120,160,240,0.05)',
-    transform: [{ rotate: '45deg' }, { scaleX: 0.4 }],
-  },
-  cornerTL: {
-    position: 'absolute',
-    top: 3, left: 4,
-    alignItems: 'center',
-  },
-  cornerBR: {
-    position: 'absolute',
-    bottom: 3, right: 4,
-    alignItems: 'center',
-  },
-  cornerRankText: {
-    fontWeight: '800',
-    lineHeight: undefined,
-    includeFontPadding: false,
-  },
-  cornerSuitText: {
-    fontWeight: '700',
-    lineHeight: undefined,
-    includeFontPadding: false,
-    marginTop: -2,
-  },
-  centerSuit: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  suitCenterText: {
-    fontWeight: '900',
-    lineHeight: undefined,
-    includeFontPadding: false,
-  },
-  rankText: { color: '#111827', fontWeight: '900' },
-  suitText: { fontWeight: '800' },
+  slotEmpty: { backgroundColor: 'rgba(0,0,0,0.15)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  cardFaceUp: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D1D5DB', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4, overflow: 'hidden' },
+  faceDown: { backgroundColor: '#1E3A8A', borderWidth: 1, borderColor: '#3B82F6', overflow: 'hidden' },
+  backInnerBorder: { position: 'absolute', top: 3, left: 3, right: 3, bottom: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', backgroundColor: '#172554' },
+  cornerTL: { position: 'absolute', top: 2, left: 4, alignItems: 'center' },
+  cornerBR: { position: 'absolute', bottom: 2, right: 4, alignItems: 'center' },
+  cornerRankText: { fontWeight: '800', lineHeight: undefined, includeFontPadding: false },
+  centerSuit: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center' },
+  suitCenterText: { fontWeight: '900', lineHeight: undefined, includeFontPadding: false },
 });
 
-// ─── CHIP STACK ───────────────────────────────────────────────────────────────
-type ChipTier = 'small' | 'medium' | 'large' | 'huge';
-function chipTierByAmount(amountBb: number): ChipTier {
-  if (amountBb <= 2)  return 'small';
-  if (amountBb <= 10) return 'medium';
-  if (amountBb <= 25) return 'large';
-  return 'huge';
-}
-
-// Casino-style chip colors
-const CHIP_PALETTE: Record<ChipTier, { base: string; stripe: string }> = {
-  small:  { base: '#E8E4D8', stripe: '#FFFFFF' },   // ivory/white
-  medium: { base: '#CC2200', stripe: '#FF9977' },   // red
-  large:  { base: '#1A3A7A', stripe: '#6699DD' },   // blue
-  huge:   { base: '#5C0DAE', stripe: '#C580FF' },   // purple
-};
-
 function ChipStack({ amountBb }: { amountBb: number }) {
-  const tier = chipTierByAmount(amountBb);
-  const { base, stripe } = CHIP_PALETTE[tier];
-  const chipCount = Math.min(6, Math.max(3, 3 + Math.floor(amountBb / 8)));
-  const chipDiam  = 16;
-  const stackWidth  = 26;
-  const stackHeight = chipDiam + (chipCount - 1) * 3;
+  const isSmall = amountBb <= 5;
+  const chipCount = isSmall ? 3 : Math.min(6, 3 + Math.floor(amountBb / 10));
+  const chipDiam = 18;
+  const stackWidth = 26;
+  const stackHeight = chipDiam + (chipCount - 1) * 4;
 
   return (
-    <View style={[chipStackStyles.wrap, { width: stackWidth, height: stackHeight }]}>
+    <View style={[{ width: stackWidth, height: stackHeight, position: 'relative' }]}>
       {Array.from({ length: chipCount }).map((_, i) => (
         <View
           key={i}
-          style={[
-            chipStackStyles.chip,
-            {
-              width: chipDiam, height: chipDiam,
-              borderRadius: chipDiam / 2,
-              backgroundColor: base,
-              bottom: i * 3,
-              left: (stackWidth - chipDiam) / 2,
-            },
-          ]}
+          style={{
+            position: 'absolute', width: chipDiam, height: chipDiam, borderRadius: chipDiam / 2,
+            backgroundColor: isSmall ? '#D1D5DB' : '#F59E0B', borderWidth: 1.5, borderColor: '#000',
+            bottom: i * 4, left: (stackWidth - chipDiam) / 2, justifyContent: 'center', alignItems: 'center'
+          }}
         >
-          <View style={[chipStackStyles.chipBorder, { width: chipDiam, height: chipDiam, borderRadius: chipDiam / 2 }]} />
-          <View style={[chipStackStyles.inlayH, { width: chipDiam - 6, left: 3, top: 3,    backgroundColor: stripe }]} />
-          <View style={[chipStackStyles.inlayH, { width: chipDiam - 6, left: 3, bottom: 3, backgroundColor: stripe }]} />
-          <View style={[chipStackStyles.inlayV, { height: chipDiam - 6, top: 3, left: 3,   backgroundColor: stripe }]} />
-          <View style={[chipStackStyles.inlayV, { height: chipDiam - 6, top: 3, right: 3,  backgroundColor: stripe }]} />
-          <View style={[chipStackStyles.highlight, { width: chipDiam / 2, height: chipDiam / 4, top: 1, left: chipDiam / 4 }]} />
+          <View style={{ width: chipDiam - 6, height: chipDiam - 6, borderRadius: (chipDiam - 6)/2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)', borderStyle: 'dashed' }} />
         </View>
       ))}
     </View>
   );
 }
 
-const chipStackStyles = StyleSheet.create({
-  wrap: { position: 'relative' },
-  chip: { position: 'absolute', overflow: 'hidden' },
-  chipBorder: {
-    position: 'absolute',
-    borderWidth: 1.5,
-    borderColor: 'rgba(0,0,0,0.40)',
-    top: 0, left: 0,
-  },
-  inlayH: {
-    position: 'absolute',
-    height: 2.5,
-    borderRadius: 1,
-    opacity: 0.85,
-  },
-  inlayV: {
-    position: 'absolute',
-    width: 2.5,
-    borderRadius: 1,
-    opacity: 0.85,
-  },
-  highlight: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 4,
-  },
-});
+function firstPhrase(text: string, maxLen = 140): string {
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) return '';
+  const dotIdx = trimmed.indexOf('.');
+  if (dotIdx !== -1) return trimmed.slice(0, dotIdx + 1).trim();
+  return trimmed.length <= maxLen ? trimmed : trimmed.slice(0, maxLen).trim() + '…';
+}
+function leakTagDisplay(tag: string | null | undefined): string {
+  if (!tag) return '';
+  return tag.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+}
 
-// ─── TABLE LOGIC ──────────────────────────────────────────────────────────────
 type TableGradeResult = { isCorrect: boolean; explanation: string };
-
-const SEAT_ANGLES_RAD = [Math.PI / 2, Math.PI / 6, -Math.PI / 6, -Math.PI / 2, -5 * Math.PI / 6, 5 * Math.PI / 6];
-const HERO_SEAT_INDEX    = 0;
+const HERO_SEAT_INDEX = 0;
 const VILLAIN_SEAT_INDEX = 3;
-// Clockwise from BTN: right side → CO, HJ, UTG(top/villain), BB, SB(left of hero)
-// Hero(0)=BTN  → right: 1=CO, 2=HJ  → top: 3=UTG  → left: 4=BB, 5=SB
 const POSITION_LABELS = ['BTN', 'CO', 'HJ', 'UTG', 'BB', 'SB'];
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
+type SeatPos = { top?: DimensionValue; bottom?: DimensionValue; left?: DimensionValue; right?: DimensionValue; marginLeft?: number };
 
-function seatPosition(index: number, wrapW: number, wrapH: number): { x: number; y: number } {
-  const tableW = wrapW - 24;
-  const tableH = wrapH - 24;
-  const cx = wrapW / 2;
-  const cy = wrapH / 2;
-  const rx = tableW * 0.48;
-  const ry = tableH * 0.50;
-  const theta = SEAT_ANGLES_RAD[index];
-  let x = cx + rx * Math.cos(theta);
-  let y = cy + ry * Math.sin(theta);
-  if (index === HERO_SEAT_INDEX)    y += 10;
-  if (index === VILLAIN_SEAT_INDEX) y -= 6;
-  return { x, y };
-}
+const SEAT_POSITIONS: SeatPos[] = [
+  { bottom: 0, left: '50%', marginLeft: -30 },   // 0: Hero
+  { bottom: '20%', right: -25 },                   // 1: CO
+  { top: '20%', right: -25 },                      // 2: HJ
+  { top: -10, left: '50%', marginLeft: -30 },      // 3: Villain
+  { top: '20%', left: -25 },                       // 4: BB
+  { bottom: '20%', left: -25 },                    // 5: SB
+];
 
-// ─── MAIN SCREEN ─────────────────────────────────────────────────────────────
 export default function TrainScreen() {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ startSessionLeakTag?: string }>();
+  const startSessionFromParamHandledRef = useRef(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -313,61 +178,69 @@ export default function TrainScreen() {
   const [tableGradeResult, setTableGradeResult] = useState<TableGradeResult | null>(null);
   const [currentDrillRow, setCurrentDrillRow] = useState<DrillQueueRow | null>(null);
   const [dueDrills, setDueDrills] = useState<DrillQueueRow[]>([]);
-  const [loadingDue, setLoadingDue] = useState(false);
   const [raiseSizeBb, setRaiseSizeBb] = useState(12);
-  const [tableLayout, setTableLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [currentDifficulty, setCurrentDifficulty] = useState<string | null>(null);
+  const [currentDrillType, setCurrentDrillType] = useState<'action_decision' | 'raise_sizing' | null>(null);
+  const [lastTrainingEventId, setLastTrainingEventId] = useState<string | null>(null);
+  const [selectedMistakeReason, setSelectedMistakeReason] = useState<string | null>(null);
+  const [showReasonSaved, setShowReasonSaved] = useState(false);
+  const reasonSavedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshInProgressRef = useRef(false);
 
+  const [weeklyFocusTag, setWeeklyFocusTag] = useState<string>('fundamentals');
+  const [weeklyFocusWhy, setWeeklyFocusWhy] = useState<string>('');
+  const [tomorrowPlanText, setTomorrowPlanText] = useState<string>('');
+  const [tomorrowPlanSubtext, setTomorrowPlanSubtext] = useState<string>('Target: ≥4/5');
+  const [focusModalVisible, setFocusModalVisible] = useState(false);
+
+  const [sessionActive, setSessionActive] = useState(false);
+  const [sessionLeakTag, setSessionLeakTag] = useState<string | null>(null);
+  const [sessionIndex, setSessionIndex] = useState(0);
+  const [sessionCorrect, setSessionCorrect] = useState(0);
+  const [sessionHistory, setSessionHistory] = useState<SessionHistoryEntry[]>([]);
+  const [sessionDrillRow, setSessionDrillRow] = useState<DrillQueueRow | null>(null);
+  const sessionIndexRef = useRef(0);
+
   const isYourTurn = scenario != null && !tableGradeResult;
-  // Panel is ALWAYS visible — content changes based on state
   const showActionBar = !!scenario && !tableGradeResult;
 
-  // Card animations
-  const heroCard1Opacity    = useRef(new Animated.Value(0)).current;
+  const heroCard1Opacity = useRef(new Animated.Value(0)).current;
   const heroCard1TranslateY = useRef(new Animated.Value(10)).current;
-  const heroCard2Opacity    = useRef(new Animated.Value(0)).current;
+  const heroCard2Opacity = useRef(new Animated.Value(0)).current;
   const heroCard2TranslateY = useRef(new Animated.Value(10)).current;
-  const boardOpacities      = useRef([0,1,2,3,4].map(() => new Animated.Value(0))).current;
-  const boardTranslateYs    = useRef([0,1,2,3,4].map(() => new Animated.Value(8))).current;
-
-  // Bet badge fade-in animation
+  const boardOpacities = useRef([0, 1, 2, 3, 4].map(() => new Animated.Value(0))).current;
+  const boardTranslateYs = useRef([0, 1, 2, 3, 4].map(() => new Animated.Value(8))).current;
   const betBadgeOpacity = useRef(new Animated.Value(0)).current;
-
-  const heroPulseScale   = useRef(new Animated.Value(1)).current;
+  const heroPulseScale = useRef(new Animated.Value(1)).current;
   const heroPulseLoopRef = useRef<Animated.CompositeAnimation | null>(null);
 
-  const foldScale  = useRef(new Animated.Value(1)).current;
-  const callScale  = useRef(new Animated.Value(1)).current;
+  const foldScale = useRef(new Animated.Value(1)).current;
+  const callScale = useRef(new Animated.Value(1)).current;
   const raiseScale = useRef(new Animated.Value(1)).current;
 
-  // Tab navigator already places screen ABOVE the tab bar.
-  // insets.bottom = Android nav-buttons height (below tab bar) — irrelevant here, do NOT add it.
-  const PANEL_BOTTOM_PAD = 6;   // tiny gap between buttons and tab bar
-  const tableAreaPaddingBottom = CONTROL_PANEL_HEIGHT + PANEL_BOTTOM_PAD + 8;
-  const tableAreaInnerHeight = screenHeight - insets.top - tableAreaPaddingBottom;
-  // 0.86 multiplier leaves enough room for hero cards below the oval without overlap
-  const tableHeight = tableAreaInnerHeight * 0.86;
-  const tableWidth  = Math.min(screenWidth * 0.92, tableHeight * 1.32);
-  const wrapW = tableLayout?.width  ?? tableWidth + 24;
-  const wrapH = tableLayout?.height ?? tableHeight + 24;
-  const boardY = wrapH * 0.40;
-  const potY   = boardY + CARD_MD_HEIGHT + 12;
-  const scale  = clamp(screenWidth / 390, 0.92, 1.05);
+  // ── ЖЕСТКИЕ РАЗМЕРЫ СТОЛА (ОГРОМНЫЙ ОВАЛ)
+  const tableWidth = screenWidth * 0.88; 
+  // Делаем стол вытянутым, но чтобы он не разорвал экран
+  const tableHeight = Math.min(screenHeight * 0.68, tableWidth * 1.85);
+  const tableBorderRadius = tableWidth / 2; 
 
   async function loadDueDrills() {
-    setLoadingDue(true);
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error: err } = await supabase.rpc('rpc_get_due_drills', { limit_n: 5 } as any);
       if (err) throw err;
       setDueDrills(data ?? []);
     } catch (e) {
-      console.error('Failed to load due drills:', e);
       setDueDrills([]);
-    } finally {
-      setLoadingDue(false);
     }
   }
+
+  const refreshFocus = useCallback(async () => {
+    try {
+      const { data: rows } = await supabase.from('skill_ratings').select('leak_tag, rating, attempts_7d, correct_7d, last_practice_at');
+      if (!rows || rows.length === 0) return;
+      setWeeklyFocusTag('fundamentals');
+    } catch (e) { }
+  }, []);
 
   const refreshTrain = useCallback(async () => {
     if (refreshInProgressRef.current) return;
@@ -376,1000 +249,430 @@ export default function TrainScreen() {
       await ensureSession();
       await callEdge('ai-bootstrap-drill-queue', {});
       await loadDueDrills();
-    } catch (e) {
-      console.error('Refresh train failed:', e);
-    } finally {
+    } catch (e) { } finally {
       refreshInProgressRef.current = false;
     }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      refreshTrain();
-    }, [refreshTrain])
-  );
+  useFocusEffect(useCallback(() => { refreshTrain(); refreshFocus(); }, [refreshTrain, refreshFocus]));
 
   useEffect(() => {
-    if (scenario?.action_to_hero) {
-      const defaultRaise = Math.max(12, scenario.action_to_hero.size_bb * 2);
-      setRaiseSizeBb(defaultRaise);
-    }
+    if (scenario?.action_to_hero) setRaiseSizeBb(Math.max(12, scenario.action_to_hero.size_bb * 2));
   }, [scenario]);
 
   useEffect(() => {
     if (!scenario) {
-      heroCard1Opacity.setValue(0);
-      heroCard1TranslateY.setValue(10);
-      heroCard2Opacity.setValue(0);
-      heroCard2TranslateY.setValue(10);
-      boardOpacities.forEach((a) => a.setValue(0));
-      boardTranslateYs.forEach((a) => a.setValue(8));
+      heroCard1Opacity.setValue(0); heroCard1TranslateY.setValue(10);
+      heroCard2Opacity.setValue(0); heroCard2TranslateY.setValue(10);
+      boardOpacities.forEach((a) => a.setValue(0)); boardTranslateYs.forEach((a) => a.setValue(8));
       betBadgeOpacity.setValue(0);
       return;
     }
-
-    const heroDuration  = 200;
-    const boardDuration = 170;
-    const boardDelays   = [0, 90, 170, 270, 360];
-    const cardCount     = 3 + (scenario.board.turn ? 1 : 0) + (scenario.board.river ? 1 : 0);
-
     Animated.parallel([
-      Animated.timing(heroCard1Opacity,    { toValue: 1, duration: heroDuration, useNativeDriver: true }),
-      Animated.timing(heroCard1TranslateY, { toValue: 0, duration: heroDuration, useNativeDriver: true }),
-      Animated.timing(heroCard2Opacity,    { toValue: 1, duration: heroDuration, useNativeDriver: true }),
-      Animated.timing(heroCard2TranslateY, { toValue: 0, duration: heroDuration, useNativeDriver: true }),
+      Animated.timing(heroCard1Opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(heroCard1TranslateY, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.timing(heroCard2Opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(heroCard2TranslateY, { toValue: 0, duration: 200, useNativeDriver: true }),
     ]).start();
 
+    const cardCount = 3 + (scenario.board.turn ? 1 : 0) + (scenario.board.river ? 1 : 0);
     boardOpacities.slice(0, cardCount).forEach((op, i) => {
       Animated.sequence([
-        Animated.delay(boardDelays[i]),
+        Animated.delay(i * 80),
         Animated.parallel([
-          Animated.timing(op,                  { toValue: 1, duration: boardDuration, useNativeDriver: true }),
-          Animated.timing(boardTranslateYs[i], { toValue: 0, duration: boardDuration, useNativeDriver: true }),
+          Animated.timing(op, { toValue: 1, duration: 150, useNativeDriver: true }),
+          Animated.timing(boardTranslateYs[i], { toValue: 0, duration: 150, useNativeDriver: true }),
         ]),
       ]).start();
     });
 
-    const isBetOrRaise = scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise';
-    if (isBetOrRaise) {
-      betBadgeOpacity.setValue(0);
-      Animated.sequence([
-        Animated.delay(300),
-        Animated.timing(betBadgeOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
-      ]).start();
+    if (scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise') {
+      Animated.sequence([Animated.delay(300), Animated.timing(betBadgeOpacity, { toValue: 1, duration: 200, useNativeDriver: true })]).start();
     }
   }, [scenario]);
 
   async function startDrill() {
-    setLoading(true);
-    setError(null);
-    setScenario(null);
-    setTableGradeResult(null);
-    setCurrentDrillRow(null);
-
+    if (sessionActive) return;
+    setLoading(true); setError(null); setScenario(null); setTableGradeResult(null); setCurrentDrillRow(null); setCurrentDrillType(null);
     try {
       await ensureSession();
-
-      const leak_tag = dueDrills.length > 0 ? dueDrills[0].leak_tag : 'fundamentals';
-      const row      = dueDrills.length > 0 ? dueDrills[0] : null;
-
-      const data = await callEdge('ai-generate-table-drill', { leak_tag, difficulty: 'medium' });
-
-      if (!data || data.ok !== true || !data.scenario) {
-        setError('Не удалось сгенерировать сценарий. Попробуй ещё раз.');
-        return;
-      }
-
+      const due = dueDrills[0] ?? null;
+      const leak_tag = due?.leak_tag ?? 'fundamentals';
+      const drillType = due?.drill_type === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
+      const data = await callEdge('ai-generate-table-drill', { leak_tag, drill_type: drillType });
+      if (!data || !data.ok || !data.scenario) { setError('Ошибка генерации'); return; }
       setScenario(data.scenario as TableDrillScenario);
-      if (row) setCurrentDrillRow(row);
-    } catch (e: any) {
-      if (e?.message === 'Failed to create session') {
-        setError('Не удалось создать сессию. Перезапусти приложение.');
-      } else {
-        setError(e instanceof Error ? e.message : 'Неизвестная ошибка');
-      }
-    } finally {
-      setLoading(false);
-    }
+      setCurrentDrillType(drillType);
+      setCurrentDifficulty((data as any)?.difficulty ?? null);
+      if (due) setCurrentDrillRow(due);
+    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
   }
 
-  async function selectTableAction(userAction: TableDrillCorrectAction) {
-    if (!scenario) return;
-    if (!currentDrillRow) {
-      setError('Нет записи в очереди дриллов. Обновите экран.');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
+  async function selectTableAction(userAnswer: TableDrillCorrectAction | RaiseSizingOption) {
+    if (!scenario || !currentDrillRow) return;
+    setLoading(true); setError(null);
+    const drillType = (currentDrillType ?? scenario.drill_type) === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
     try {
       await ensureSession();
-      const data = await callEdge('ai-submit-table-drill-result', {
-        drill_queue_id: currentDrillRow.id,
-        scenario,
-        user_action: userAction,
-        raise_size_bb: userAction === 'raise' ? raiseSizeBb : undefined,
-      });
-
-      if (data?.error) {
-        setError(data.detail ?? data.error ?? 'Ошибка отправки результата');
-        return;
+      const payload: any = { drill_queue_id: currentDrillRow.id, scenario, drill_type: drillType };
+      if (drillType === 'raise_sizing') payload.user_answer = userAnswer;
+      else { payload.user_action = userAnswer; if (userAnswer === 'raise') payload.raise_size_bb = raiseSizeBb; }
+      
+      const data = await callEdge('ai-submit-table-drill-result', payload);
+      if (data?.error) { setError(data.error); return; }
+      
+      setLastTrainingEventId(data?.training_event_id ?? null);
+      setTableGradeResult({ isCorrect: data?.correct === true, explanation: data?.explanation ?? '' });
+      if (sessionActive) {
+        const nextIndex = Math.min(SESSION_TARGET_COUNT, sessionIndex + 1);
+        sessionIndexRef.current = nextIndex; setSessionIndex(nextIndex);
+        setSessionCorrect((p) => p + (data?.correct ? 1 : 0));
+        setSessionHistory((p) => [...p, { is_correct: data?.correct, drill_type: drillType, difficulty: currentDifficulty ?? undefined }]);
+        if (nextIndex >= SESSION_TARGET_COUNT) setTableGradeResult(null);
       }
-
-      const isCorrect   = data?.correct === true;
-      const explanation = data?.explanation ?? scenario.explanation ?? '';
-      setTableGradeResult({ isCorrect, explanation });
-    } catch (e: any) {
-      setError(e instanceof Error ? e.message : 'Не удалось отправить результат');
-      console.error('ai-submit-table-drill-result failed:', e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
   }
 
-  function closeResultModal() {
-    setTableGradeResult(null);
-    refreshTrain();
+  async function closeResultModal() {
+    setTableGradeResult(null); setLastTrainingEventId(null); setSelectedMistakeReason(null);
+    if (sessionActive && sessionIndexRef.current >= SESSION_TARGET_COUNT) { setScenario(null); return; }
     startDrill();
   }
 
   function actionLineText(): string {
     if (!scenario) return 'Checked to you';
+    const type = currentDrillType ?? scenario.drill_type;
+    if (type === 'raise_sizing') return 'Choose raise size';
     const a = scenario.action_to_hero;
-    if (a.type === 'check') return 'Checked to you';
-    return `To call: ${a.size_bb} bb`;
+    if (a?.type === 'check') return 'Checked to you';
+    return a ? `To call: ${a.size_bb} bb` : '—';
   }
 
   function communityCards(sc: TableDrillScenario): string[] {
     const out = [...sc.board.flop];
-    if (sc.board.turn)  out.push(sc.board.turn);
+    if (sc.board.turn) out.push(sc.board.turn);
     if (sc.board.river) out.push(sc.board.river);
     return out;
   }
 
-  const isModalOpen = !!tableGradeResult;
-
   useEffect(() => {
     if (showActionBar && scenario?.action_to_hero) {
       heroPulseScale.setValue(1);
-      heroPulseLoopRef.current = Animated.loop(
-        Animated.sequence([
-          Animated.timing(heroPulseScale, { toValue: 1.03, duration: 650, useNativeDriver: true }),
-          Animated.timing(heroPulseScale, { toValue: 1,    duration: 650, useNativeDriver: true }),
-        ]),
-        { resetBeforeIteration: false }
-      );
+      heroPulseLoopRef.current = Animated.loop(Animated.sequence([
+        Animated.timing(heroPulseScale, { toValue: 1.05, duration: 800, useNativeDriver: true }),
+        Animated.timing(heroPulseScale, { toValue: 1, duration: 800, useNativeDriver: true }),
+      ]));
       heroPulseLoopRef.current.start();
-      return () => {
-        heroPulseLoopRef.current?.stop();
-        heroPulseLoopRef.current = null;
-        heroPulseScale.setValue(1);
-      };
+      return () => { heroPulseLoopRef.current?.stop(); heroPulseScale.setValue(1); };
     }
-    heroPulseLoopRef.current?.stop();
-    heroPulseLoopRef.current = null;
-    heroPulseScale.setValue(1);
-  }, [showActionBar, scenario?.action_to_hero]);
+  }, [showActionBar, scenario]);
 
-  // ─── RENDER ────────────────────────────────────────────────────────────────
+  const bottomPadding = 0; // Таббар уже учитывает safe area
+
   return (
-    <ScreenWrapper style={styles.screenWrapper}>
-      <View style={styles.screen}>
+    // МЫ НЕ ИСПОЛЬЗУЕМ <ScreenWrapper>, ЧТОБЫ СБРОСИТЬ ОТСТУПЫ!
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
+      
+      {error && <View style={[styles.errorBar, { top: insets.top + 10 }]}><AppText style={{color: '#FFF'}}>{error}</AppText></View>}
 
-        {/* ── TABLE AREA ─────────────────────────────────────────────────── */}
-        <View style={[styles.tableArea, { paddingTop: insets.top, paddingBottom: tableAreaPaddingBottom }]}>
-          <TouchableWithoutFeedback>
-            <View
-              style={[styles.tableWrap, { width: tableWidth + 24, height: tableHeight + 24 }]}
-              onLayout={(e) => {
-                const { x, y, width, height } = e.nativeEvent.layout;
-                setTableLayout({ x, y, width, height });
-              }}
-            >
-              {/* Rail outer glow ring */}
-              <View style={[styles.railOuter, styles.tableAbsoluteFill]} />
-              {/* Rail + felt */}
-              <View style={[styles.tableOuter, styles.tableAbsoluteFill, { zIndex: 1 }]}>
-                <View style={[styles.tableFelt, { width: tableWidth, height: tableHeight }]}>
-                  <View
-                    style={[styles.feltRadialOverlay, {
-                      width:        tableWidth  * 0.78,
-                      height:       tableHeight * 0.78,
-                      borderRadius: (tableWidth * 0.78) / 2,
-                    }]}
-                    pointerEvents="none"
-                  />
-                  <View
-                    style={[styles.feltInnerShadow, {
-                      width:        tableWidth  - 10,
-                      height:       tableHeight - 10,
-                      left: 5, top: 5,
-                      borderRadius: (tableWidth - 10) / 2,
-                    }]}
-                    pointerEvents="none"
-                  />
-                </View>
-              </View>
-
-              {/* ── Community cards — only actual cards, centered ── */}
-              <View style={[styles.boardContainer, { top: boardY, zIndex: 5 }]} pointerEvents="none">
-                <View style={styles.boardRow}>
-                  {scenario
-                    ? communityCards(scenario).map((code, i) => (
-                        <Animated.View
-                          key={i}
-                          style={{ opacity: boardOpacities[i], transform: [{ translateY: boardTranslateYs[i] }, { scale }] }}
-                        >
-                          <CardView code={code} size="md" />
-                        </Animated.View>
-                      ))
-                    : null}
-                </View>
-              </View>
-
-              {/* Pot capsule: below board */}
-              <View style={[styles.potCapsuleContainer, { top: potY, zIndex: 5 }]} pointerEvents="none">
-                <View style={styles.potCapsule}>
-                  <AppText variant="caption" style={styles.potText}>
-                    POT  {scenario ? `${scenario.pot_bb} bb` : '—'}
-                  </AppText>
-                </View>
-              </View>
-
-              {/* ── Your-turn dim overlay ── */}
-              {isYourTurn && (
-                <View style={[StyleSheet.absoluteFillObject, styles.yourTurnDimOverlay, { zIndex: 15 }]} pointerEvents="none" />
-              )}
-
-              {/* ── Dealer button (D) — on the felt, beside BTN/Hero cards ── */}
-              {(() => {
-                // Hero = BTN = Dealer; button sits to the right of hero's cards
-                const hp = seatPosition(HERO_SEAT_INDEX, wrapW, wrapH);
-                const cardHalfSpan = CARD_DIMENSIONS.lg.width + 10; // approx half of 2 cards + gap
-                return (
-                  <View
-                    style={[styles.dealerButton, {
-                      left: hp.x + cardHalfSpan,
-                      top:  hp.y - 44,   // at the bottom edge of the table oval
-                      zIndex: 25,
-                    }]}
-                    pointerEvents="none"
-                  >
-                    <AppText style={styles.dealerText}>D</AppText>
-                  </View>
-                );
-              })()}
-
-              {/* ── 6 seats ─────────────────────────────────────────────── */}
-              {/*
-                Layout strategy:
-                  - Uniform SEAT_OFFSET_Y = 46 for all seats.
-                  - Each seat View top = pos.y - 46; content flows DOWN.
-                  - Hero (bottom, y ≈ wrapH): offsetY = -6 so content flows
-                    BELOW the table oval (not over the hole cards).
-                  - Villain (top, y ≈ 6): offsetY = 56 so the entire
-                    seat content sits ABOVE the table oval.
-                  - All others: 46 — content sits on the rail edge.
-              */}
-              {[0, 1, 2, 3, 4, 5].map((index) => {
-                const pos       = seatPosition(index, wrapW, wrapH);
-                const isHero    = index === HERO_SEAT_INDEX;
-                const isVillain = index === VILLAIN_SEAT_INDEX;
-                const isEmpty   = !isHero && !isVillain;
-                const posLabel  = POSITION_LABELS[index];
-                const stack     = scenario && (isHero || isVillain)
-                  ? `${scenario.effective_stack_bb} bb`
-                  : '';
-
-                // Per-seat vertical offset (see comment above)
-                const offsetY = isHero ? -6 : isVillain ? 56 : 46;
-                const seatW   = isHero ? 64 : isVillain ? 62 : 52;
-
-                const posStyle = {
-                  left:  pos.x - seatW / 2,
-                  top:   pos.y - offsetY,
-                  width: seatW,
-                  zIndex: isHero || isVillain ? 10 : 8,
-                };
-
-                // ── EMPTY SEAT ───────────────────────────────────────────
-                if (isEmpty) {
-                  return (
-                    <View key={index} style={[styles.seat, posStyle, styles.seatEmpty]}>
-                      {/* faint ghost circle */}
-                      <View style={styles.ghostCircle} />
-                      <View style={styles.emptySlot}>
-                        <AppText style={styles.emptySlotText}>{posLabel}</AppText>
-                      </View>
-                    </View>
-                  );
-                }
-
-                // ── VILLAIN SEAT ─────────────────────────────────────────
-                if (isVillain) {
-                  return (
-                    <View key={index} style={[styles.seat, posStyle, { alignItems: 'center' }]}>
-                      <View style={[styles.playerAvatar, styles.villainAvatar,
-                        isYourTurn && { opacity: 0.55 }]}>
-                        <AppText style={styles.playerAvatarText}>V</AppText>
-                      </View>
-                      <View style={styles.villainPosChip}>
-                        <AppText style={styles.villainPosText}>{posLabel}</AppText>
-                      </View>
-                      {!!stack && <AppText style={styles.playerStack}>{stack}</AppText>}
-                    </View>
-                  );
-                }
-
-                // ── HERO SEAT ────────────────────────────────────────────
-                // Shows BELOW the table oval (below hole cards)
-                return (
-                  <Animated.View
-                    key={index}
-                    style={[styles.seat, posStyle, { alignItems: 'center' },
-                      isYourTurn && styles.heroYourTurnGlow,
-                      { transform: [{ scale: heroPulseScale }] },
-                    ]}
-                  >
-                    <View style={styles.heroPosChip}>
-                      <AppText style={styles.heroPosText}>{posLabel}</AppText>
-                    </View>
-                    {!!stack && <AppText style={styles.heroStack}>{stack}</AppText>}
-                  </Animated.View>
-                );
-              })}
-
-              {/* ── Villain bet badge (replaces flying chip) ── */}
-              {scenario && (scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise') && (() => {
-                const villainPos = seatPosition(VILLAIN_SEAT_INDEX, wrapW, wrapH);
-                const sizeBb     = scenario.action_to_hero.size_bb;
-                const tier       = sizeBb <= 2 ? 'small' : sizeBb <= 10 ? 'medium' : sizeBb <= 25 ? 'large' : 'huge';
-                const tintColor  = { small: '#AAAAAA', medium: '#FF6644', large: '#4477CC', huge: '#9944EE' }[tier];
-                // Place badge well below villain seat content (content ends ~pos.y+20)
-                // Push toward center of table so it floats between villain and board
-                return (
-                  <Animated.View
-                    style={[styles.betBadgeWrap, {
-                      left: villainPos.x - 36,
-                      top:  villainPos.y + 46,
-                      opacity: betBadgeOpacity,
-                      zIndex: 8,
-                    }]}
-                    pointerEvents="none"
-                  >
-                    <View style={styles.betBadgeChipRow}>
-                      <ChipStack amountBb={sizeBb} />
-                      <View style={[styles.betBadgePill, { borderColor: tintColor }]}>
-                        <AppText variant="caption" style={[styles.betBadgeText, { color: tintColor }]}>
-                          {sizeBb} bb
-                        </AppText>
-                      </View>
-                    </View>
-                  </Animated.View>
-                );
-              })()}
-
-              {/* ── Hero hole cards ── */}
-              {scenario && (
-                <View style={[styles.heroCardsContainer, { zIndex: 20 }]} pointerEvents="none">
-                  <Animated.View style={{ opacity: heroCard1Opacity, transform: [{ translateY: heroCard1TranslateY }, { scale }] }}>
-                    <CardView code={scenario?.hero_cards[0]} size="lg" />
-                  </Animated.View>
-                  <Animated.View style={{ opacity: heroCard2Opacity, transform: [{ translateY: heroCard2TranslateY }, { scale }] }}>
-                    <CardView code={scenario?.hero_cards[1]} size="lg" />
-                  </Animated.View>
-                </View>
-              )}
-
-              {/* Loading spinner inside table (while waiting for scenario) */}
-              {loading && !scenario && (
-                <View style={styles.centerOverlay} pointerEvents="none">
-                  <ActivityIndicator color="rgba(255,255,255,0.5)" size="large" />
-                </View>
-              )}
+      {/* ─── ВЕРХНИЙ БЛОК: СТОЛ (FLEX: 1, ЗАНИМАЕТ ВСЁ СВОБОДНОЕ МЕСТО) ───────────────────────── */}
+      <View style={styles.tableContainer}>
+        <View style={[styles.tablePill, { width: tableWidth, height: tableHeight, borderRadius: tableBorderRadius }]}>
+          <View style={[styles.railOuter, { borderRadius: tableBorderRadius }, styles.absoluteFill]} />
+          <View style={[styles.railInner, { borderRadius: tableBorderRadius - 12 }, styles.absoluteFill]}>
+            <View style={[styles.felt, { borderRadius: tableBorderRadius - 14 }, styles.absoluteFill]}>
+               <View style={styles.feltCenterGlow} pointerEvents="none" />
             </View>
-          </TouchableWithoutFeedback>
-        </View>
-
-        {/* Error bar */}
-        {error ? (
-          <View style={[styles.errorBar, { top: insets.top + 8 }]}>
-            <AppText variant="caption" color="#FF6B6B">{error}</AppText>
           </View>
-        ) : null}
 
-        {/* ── CONTROL PANEL — always visible, flush to tab bar ─────────── */}
-        <View style={styles.controlPanel}>
-
-          {/* ── STATE 1: Loading ── */}
-          {loading && !scenario && (
-            <View style={styles.panelLoadingRow}>
-              <ActivityIndicator color="#4C9AFF" size="small" />
-              <AppText variant="caption" style={styles.panelLoadingText}>
-                Генерирую задачу…
-              </AppText>
+          <View style={styles.boardCenter}>
+            <View style={styles.potDisplay}>
+              <AppText style={styles.potText}>Pot: {scenario ? scenario.pot_bb : 0}</AppText>
             </View>
-          )}
+            <View style={styles.boardRow}>
+              {scenario && communityCards(scenario).map((code, i) => (
+                <Animated.View key={i} style={{ opacity: boardOpacities[i], transform: [{ translateY: boardTranslateYs[i] }] }}>
+                  <CardView code={code} size="md" />
+                </Animated.View>
+              ))}
+            </View>
+          </View>
 
-          {/* ── STATE 2: No scenario — show "New Drill" CTA ── */}
-          {!scenario && !loading && (
-            <TouchableOpacity
-              style={styles.startDrillBtn}
-              onPress={startDrill}
-              activeOpacity={0.82}
-            >
-              <AppText variant="body" style={styles.startDrillBtnText}>
-                ▶  Новый Drill
-              </AppText>
-            </TouchableOpacity>
-          )}
+          <View style={styles.dealerBtn}><AppText style={styles.dealerText}>D</AppText></View>
 
-          {/* ── STATE 3: Scenario active — Fold / Call / Raise ── */}
-          {showActionBar && (
-            <>
-              {/* Info row */}
-              <View style={styles.controlInfoRow}>
-                <AppText variant="caption" style={styles.controlInfoText}>
-                  {actionLineText()}
-                </AppText>
-                <View style={styles.controlPotPill}>
-                  <AppText variant="caption" style={styles.controlPotText}>
-                    POT  {scenario ? `${scenario.pot_bb} bb` : '—'}
-                  </AppText>
-                </View>
-              </View>
+          {SEAT_POSITIONS.map((pos, index) => {
+            const isHero = index === HERO_SEAT_INDEX;
+            const isVillain = index === VILLAIN_SEAT_INDEX;
+            const isEmpty = !isHero && !isVillain;
+            const posLabel = POSITION_LABELS[index];
+            const stack = scenario && (isHero || isVillain) ? `${scenario.effective_stack_bb} bb` : '';
 
-              {/* Buttons row */}
-              <View style={styles.controlBtnRow}>
-                {/* FOLD */}
-                <Pressable
-                  style={styles.controlBtnPressable}
-                  onPressIn ={() => Animated.timing(foldScale, { toValue: 0.96, duration: 80,  useNativeDriver: true }).start()}
-                  onPressOut={() => Animated.timing(foldScale, { toValue: 1,    duration: 150, useNativeDriver: true }).start()}
-                  onPress={() => selectTableAction('fold')}
-                  disabled={isModalOpen || loading}
-                >
-                  <Animated.View style={[styles.controlBtn, styles.btnFold, { transform: [{ scale: foldScale }] }]}>
-                    <AppText variant="body" style={styles.btnFoldText}>Fold</AppText>
+            return (
+              <View key={index} style={[styles.seatContainer, { top: pos.top, bottom: pos.bottom, left: pos.left, right: pos.right, marginLeft: pos.marginLeft }]}>
+                {isEmpty ? (
+                  <View style={styles.emptySeat}><AppText style={styles.seatLabelEmpty}>{posLabel}</AppText></View>
+                ) : (
+                  <Animated.View style={[styles.activeSeat, isHero && { transform: [{ scale: heroPulseScale }] }]}>
+                    {isVillain && scenario && (scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise') && (
+                       <Animated.View style={[styles.villainBet, { opacity: betBadgeOpacity }]}>
+                         <ChipStack amountBb={scenario.action_to_hero.size_bb} />
+                         <AppText style={styles.villainBetText}>{scenario.action_to_hero.size_bb}</AppText>
+                       </Animated.View>
+                    )}
+
+                    <View style={[styles.avatar, isHero ? styles.avatarHero : styles.avatarVillain]}>
+                       <AppText style={styles.avatarText}>{isHero ? 'You' : 'Opp'}</AppText>
+                    </View>
+                    <View style={styles.seatInfo}>
+                      <AppText style={styles.seatStackText}>{stack}</AppText>
+                    </View>
+                    
+                    {isHero && scenario && (
+                       <View style={styles.heroCards}>
+                         <Animated.View style={{ opacity: heroCard1Opacity, transform: [{ translateY: heroCard1TranslateY }, { rotate: '-6deg' }] }}>
+                           <CardView code={scenario?.hero_cards[0]} size="lg" />
+                         </Animated.View>
+                         <Animated.View style={{ opacity: heroCard2Opacity, transform: [{ translateY: heroCard2TranslateY }, { rotate: '6deg' }], marginLeft: -20, marginTop: 5 }}>
+                           <CardView code={scenario?.hero_cards[1]} size="lg" />
+                         </Animated.View>
+                       </View>
+                    )}
                   </Animated.View>
-                </Pressable>
-
-                {/* CALL */}
-                <Pressable
-                  style={styles.controlBtnPressable}
-                  onPressIn ={() => Animated.timing(callScale, { toValue: 0.96, duration: 80,  useNativeDriver: true }).start()}
-                  onPressOut={() => Animated.timing(callScale, { toValue: 1,    duration: 150, useNativeDriver: true }).start()}
-                  onPress={() => selectTableAction('call')}
-                  disabled={isModalOpen || loading}
-                >
-                  <Animated.View style={[styles.controlBtn, styles.btnCall, { transform: [{ scale: callScale }] }]}>
-                    <AppText variant="body" style={styles.btnCallText}>Call</AppText>
-                  </Animated.View>
-                </Pressable>
-
-                {/* RAISE group: [−] [Raise Xbb] [+] */}
-                <View style={styles.raiseGroup}>
-                  <TouchableOpacity
-                    style={styles.raiseAdjBtn}
-                    onPress={() => setRaiseSizeBb((p) => Math.max(2, p - 2))}
-                    disabled={isModalOpen || loading}
-                  >
-                    <AppText variant="body" style={styles.raiseAdjText}>−</AppText>
-                  </TouchableOpacity>
-
-                  <Pressable
-                    style={{ flex: 1 }}
-                    onPressIn ={() => Animated.timing(raiseScale, { toValue: 0.96, duration: 80,  useNativeDriver: true }).start()}
-                    onPressOut={() => Animated.timing(raiseScale, { toValue: 1,    duration: 150, useNativeDriver: true }).start()}
-                    onPress={() => selectTableAction('raise')}
-                    disabled={isModalOpen || loading}
-                  >
-                    <Animated.View style={[styles.controlBtn, styles.btnRaise, { transform: [{ scale: raiseScale }] }]}>
-                      <AppText variant="caption" style={styles.btnRaiseLabel}>RAISE</AppText>
-                      <AppText variant="body" style={styles.btnRaiseSize}>{raiseSizeBb} bb</AppText>
-                    </Animated.View>
-                  </Pressable>
-
-                  <TouchableOpacity
-                    style={styles.raiseAdjBtn}
-                    onPress={() => setRaiseSizeBb((p) => p + 2)}
-                    disabled={isModalOpen || loading}
-                  >
-                    <AppText variant="body" style={styles.raiseAdjText}>+</AppText>
-                  </TouchableOpacity>
-                </View>
+                )}
               </View>
-            </>
-          )}
+            );
+          })}
         </View>
       </View>
 
-      {/* ── RESULT MODAL ─────────────────────────────────────────────────── */}
-      <Modal visible={isModalOpen} transparent animationType="fade">
-        <View style={styles.overlayBackdrop}>
-          <View style={[styles.overlayCard, {
-            borderColor: tableGradeResult?.isCorrect ? '#22C55E' : '#EF4444',
-            borderWidth: 2,
-          }]}>
-            <View style={[styles.overlayBadge, {
-              backgroundColor: tableGradeResult?.isCorrect ? '#16A34A' : '#DC2626',
-            }]}>
-              <AppText variant="h3" color="#FFFFFF">
-                {tableGradeResult?.isCorrect ? '✓  Correct' : '✗  Incorrect'}
-              </AppText>
-            </View>
-            <AppText variant="body" style={styles.overlayExplanation}>
-              {tableGradeResult?.explanation}
-            </AppText>
-            <TouchableOpacity style={styles.nextButton} onPress={closeResultModal}>
-              <AppText variant="body" color="#FFFFFF" style={styles.nextButtonText}>
-                Следующий Drill
-              </AppText>
-            </TouchableOpacity>
+      {/* ─── НИЖНИЙ БЛОК: КНОПКИ (ЖЕСТКО ПРИБИТ К НИЗУ, НИКАКОГО АБСОЛЮТА) ──────── */}
+      <View style={[styles.controlPanel, { paddingBottom: 8 }]}>
+        
+        {!scenario && !loading && (
+           <TouchableOpacity style={styles.btnStart} onPress={startDrill} activeOpacity={0.8}>
+              <AppText style={styles.btnStartText}>Новый Drill</AppText>
+           </TouchableOpacity>
+        )}
+
+        {loading && !scenario && (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color={THEME.BTN_CALL} size="large" />
+            <AppText style={{color: '#9CA3AF', fontWeight: 'bold'}}>Раздача...</AppText>
           </View>
-        </View>
-      </Modal>
-    </ScreenWrapper>
+        )}
+
+        {tableGradeResult && scenario && (
+           <View style={styles.feedbackContainer}>
+              <View style={[styles.feedbackHeader, { backgroundColor: tableGradeResult.isCorrect ? THEME.BTN_CALL : THEME.BTN_FOLD }]}>
+                 <AppText style={styles.feedbackTitle}>{tableGradeResult.isCorrect ? 'Correct Decision' : 'Incorrect Decision'}</AppText>
+              </View>
+              <AppText style={styles.feedbackBody}>{firstPhrase(tableGradeResult.explanation)}</AppText>
+              <TouchableOpacity style={styles.btnNext} onPress={closeResultModal} activeOpacity={0.8}>
+                 <AppText style={styles.btnNextText}>Next Hand</AppText>
+              </TouchableOpacity>
+           </View>
+        )}
+
+        {showActionBar && (
+          <View style={styles.actionsContainer}>
+            <View style={styles.actionHeader}>
+              <AppText style={styles.actionHeaderText}>{actionLineText()}</AppText>
+            </View>
+
+            {(currentDrillType ?? scenario!.drill_type) === 'raise_sizing' ? (
+               <View style={styles.gridRowSizing}>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('2.5x')}><AppText style={styles.btnActionText}>2.5x</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('3x')}><AppText style={styles.btnActionText}>3x</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('overbet')}><AppText style={styles.btnActionText}>Overbet</AppText></TouchableOpacity>
+               </View>
+            ) : (
+              <View style={styles.actionGrid}>
+                <View style={styles.actionRowHalf}>
+                  <Pressable
+                    style={[styles.btnAction, { backgroundColor: THEME.BTN_FOLD }]}
+                    onPressIn={() => Animated.timing(foldScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
+                    onPressOut={() => Animated.timing(foldScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
+                    onPress={() => selectTableAction('fold')} disabled={loading}
+                  >
+                    <Animated.View style={{ transform: [{ scale: foldScale }], alignItems: 'center' }}>
+                      <AppText style={styles.btnActionLabel}>FOLD</AppText>
+                    </Animated.View>
+                  </Pressable>
+                  
+                  <Pressable
+                    style={[styles.btnAction, { backgroundColor: THEME.BTN_CALL }]}
+                    onPressIn={() => Animated.timing(callScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
+                    onPressOut={() => Animated.timing(callScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
+                    onPress={() => selectTableAction('call')} disabled={loading}
+                  >
+                    <Animated.View style={{ transform: [{ scale: callScale }], alignItems: 'center' }}>
+                      <AppText style={styles.btnActionLabel}>CALL</AppText>
+                      <AppText style={styles.btnActionSub}>{scenario?.action_to_hero?.size_bb || 0}</AppText>
+                    </Animated.View>
+                  </Pressable>
+                </View>
+
+                {/* Raise Full-width Section */}
+                <View style={styles.raiseFullContainer}>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.max(2, p - 1))} disabled={loading}>
+                    <AppText style={styles.raiseInlineAdjustText}>−</AppText>
+                  </TouchableOpacity>
+
+                  <Pressable
+                    style={styles.raiseInlineCenter}
+                    onPressIn={() => Animated.timing(raiseScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
+                    onPressOut={() => Animated.timing(raiseScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
+                    onPress={() => selectTableAction('raise')} disabled={loading}
+                  >
+                    <Animated.View style={{ alignItems: 'center', transform: [{ scale: raiseScale }] }}>
+                      <AppText style={styles.btnActionLabel}>RAISE TO</AppText>
+                      <AppText style={styles.btnActionSub}>{raiseSizeBb} bb</AppText>
+                    </Animated.View>
+                  </Pressable>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => p + 1)} disabled={loading}>
+                    <AppText style={styles.raiseInlineAdjustText}>+</AppText>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+
+    </View>
   );
 }
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  screenWrapper: {
-    flex: 1,
-    backgroundColor: ROOM_BG,
-    padding: 0,
-  },
-  screen: {
-    flex: 1,
-    backgroundColor: ROOM_BG,
-  },
-  tableArea: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tableWrap: { position: 'relative' },
-  tableAbsoluteFill: {
+  // 1. ЖЕСТКАЯ СЕТКА ЭКРАНА
+  screen: { flex: 1, flexDirection: 'column', justifyContent: 'space-between', backgroundColor: THEME.BG_MAIN },
+  absoluteFill: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+  errorBar: { position: 'absolute', left: 16, right: 16, backgroundColor: '#991B1B', padding: 12, borderRadius: 8, zIndex: 100, alignItems: 'center' },
+
+  // 2. БЛОК СО СТОЛОМ ЗАНИМАЕТ ВСЁ ВЕРХНЕЕ ПРОСТРАНСТВО
+  tableContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%', paddingTop: 24 }, 
+  tablePill: { position: 'relative', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.8, shadowRadius: 30, elevation: 20 },
+  
+  railOuter: { backgroundColor: THEME.RAIL_OUTER, borderWidth: 4, borderColor: '#000' },
+  railInner: { margin: 12, backgroundColor: THEME.RAIL_INNER, borderWidth: 2, borderColor: '#3A3F58', overflow: 'hidden' },
+  felt: { margin: 14, backgroundColor: THEME.FELT_BASE, borderWidth: 2, borderColor: 'rgba(0,0,0,0.6)' },
+  feltCenterGlow: { position: 'absolute', top: '20%', left: '20%', right: '20%', bottom: '20%', backgroundColor: THEME.FELT_CENTER, borderRadius: 999, opacity: 0.5, shadowColor: THEME.FELT_CENTER, shadowOpacity: 1, shadowRadius: 40 },
+  
+  boardCenter: { alignItems: 'center', zIndex: 10 },
+  potDisplay: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 16, paddingVertical: 4, borderRadius: 12, marginBottom: 12 },
+  potText: { color: '#E5E7EB', fontWeight: '800', fontSize: 13, letterSpacing: 0.5 },
+  boardRow: { flexDirection: 'row', gap: 4 },
+  
+  dealerBtn: {
     position: 'absolute',
-    width: '100%', height: '100%',
-    left: 0, top: 0,
-  },
-  railOuter: {
-    borderRadius: 9999,
-    backgroundColor: RAIL_LIGHT,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.85,
-    shadowRadius: 30,
-    elevation: 24,
-    zIndex: 0,
-  },
-  tableOuter: {
-    padding: 13,
-    borderRadius: 9999,
-    backgroundColor: RAIL_BG,
-    borderWidth: 2.5,
-    borderColor: RAIL_TRIM,
+    bottom: '25%',
+    left: '70%',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 2,
+    borderColor: '#000',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 5,
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
   },
-  tableFelt: {
-    backgroundColor: FELT_EDGE,
-    borderRadius: 9999,
-    borderWidth: 2,
-    borderColor: 'rgba(0,0,0,0.40)',
+  dealerText: { color: '#000', fontWeight: '900', fontSize: 13 },
+
+  seatContainer: { position: 'absolute', width: 60, height: 60, alignItems: 'center', justifyContent: 'center', zIndex: 20 },
+  emptySeat: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },
+  seatLabelEmpty: { color: 'rgba(255,255,255,0.2)', fontSize: 11, fontWeight: '800' },
+  
+  activeSeat: { alignItems: 'center' },
+  avatar: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 2, shadowColor: '#000', shadowOffset: {width:0,height:4}, shadowOpacity:0.6, shadowRadius:6, elevation: 5 },
+  avatarHero: { backgroundColor: '#1E3A8A', borderColor: '#3B82F6' },
+  avatarVillain: { backgroundColor: '#7F1D1D', borderColor: '#EF4444' },
+  avatarText: { color: '#FFF', fontWeight: '900', fontSize: 14 },
+  seatInfo: { backgroundColor: '#000', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginTop: -8, borderWidth: 1, borderColor: '#374151', alignItems: 'center', zIndex: 40 },
+  seatStackText: { color: '#FCD34D', fontSize: 12, fontWeight: '900' },
+
+  heroCards: { position: 'absolute', bottom: 35, flexDirection: 'row', zIndex: 30, shadowColor: '#000', shadowOffset: {width:0, height:4}, shadowOpacity: 0.5, shadowRadius: 8 },
+  villainBet: {
+    position: 'absolute',
+    top: 75,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    padding: 4,
+    paddingRight: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    gap: 6,
+    zIndex: 30,
+  },
+  villainBetText: { color: '#FFF', fontWeight: '900', fontSize: 13 },
+
+  // 3. БЛОК КНОПОК ПРИБИТ К НИЗУ (ОБЫЧНЫЙ FLEX БЛОК)
+  controlPanel: { width: '100%', backgroundColor: THEME.PANEL_BG, paddingTop: 12, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: '#1F2233' },
+  loadingRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 12, paddingVertical: 30 },
+  
+  btnStart: { backgroundColor: THEME.BTN_CALL, height: 54, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  btnStartText: { color: '#FFF', fontWeight: '900', fontSize: 18, textTransform: 'uppercase', letterSpacing: 1 },
+
+  actionsContainer: { paddingBottom: 4 },
+  actionHeader: { alignItems: 'center', marginBottom: 12 },
+  actionHeaderText: { color: '#9CA3AF', fontSize: 14, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
+  
+  actionGrid: { flexDirection: 'column', gap: 8 },
+  actionRowHalf: { flexDirection: 'row', gap: 8, height: 54 },
+  raiseFullContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: THEME.BTN_RAISE,
+    borderRadius: 12,
+    height: 60,
+    marginTop: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.5,
+    shadowRadius: 4,
+    elevation: 4,
     overflow: 'hidden',
   },
-  feltRadialOverlay: {
-    position: 'absolute',
-    backgroundColor: FELT_CENTER,
-    opacity: 0.68,
-    alignSelf: 'center',
-    top: '11%', left: '11%',
-  },
-  feltInnerShadow: {
-    position: 'absolute',
-    borderWidth: 1.5,
-    borderColor: 'rgba(0,0,0,0.28)',
-    alignSelf: 'center',
-  },
-
-  // Board
-  boardContainer: {
-    position: 'absolute',
-    left: 0, right: 0,
-    alignItems: 'center',
-  },
-  boardRow: {
-    flexDirection: 'row',
+  raiseInlineAdjust: {
+    width: 65,
+    height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
-
-  // Pot
-  potCapsuleContainer: {
-    position: 'absolute',
-    left: 0, right: 0,
-    alignItems: 'center',
-  },
-  potCapsule: {
-    backgroundColor: 'rgba(8,10,18,0.90)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    paddingHorizontal: 14,
-    paddingVertical: 5,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.40,
-    shadowRadius: 6,
-    elevation: 5,
-  },
-  potText: {
-    color: 'rgba(255,255,255,0.92)',
-    fontWeight: '700',
-    letterSpacing: 1.0,
-    fontSize: 12,
-  },
-
-  // Dim overlay
-  yourTurnDimOverlay: {
-    backgroundColor: 'rgba(0,0,0,0.10)',
-    borderRadius: 9999,
-  },
-
-  // ── SEATS ─────────────────────────────────────────────────────────────────
-  seat: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-  },
-  seatEmpty: { opacity: 0.40 },
-
-  // Empty seat: ghost circle + small dim label
-  ghostCircle: {
-    width: 30, height: 30, borderRadius: 15,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-  },
-  emptySlot: {
-    marginTop: 3,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  emptySlotText: {
-    fontSize: 10, fontWeight: '600',
-    color: 'rgba(255,255,255,0.45)',
-    letterSpacing: 0.5, lineHeight: 14,
-  },
-
-  // Shared avatar style
-  playerAvatar: {
-    width: 38, height: 38, borderRadius: 19,
-    borderWidth: 2,
-    justifyContent: 'center', alignItems: 'center',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.5, shadowRadius: 6, elevation: 4,
-  },
-  playerAvatarText: {
-    fontWeight: '800', fontSize: 16, color: '#FFFFFF', lineHeight: 18,
-  },
-  playerStack: {
-    marginTop: 2, fontSize: 11, fontWeight: '500',
-    color: 'rgba(220,215,215,0.70)',
-  },
-
-  // Villain avatar styling
-  villainAvatar: {
-    backgroundColor: '#2A1018',
-    borderColor: 'rgba(220,70,70,0.60)',
-    shadowColor: '#CC2200',
-  },
-  villainPosChip: {
-    marginTop: 4,
-    paddingHorizontal: 8, paddingVertical: 2,
-    borderRadius: 7,
-    backgroundColor: 'rgba(200,50,50,0.20)',
-    borderWidth: 1, borderColor: 'rgba(220,80,80,0.45)',
-  },
-  villainPosText: {
-    fontSize: 11, fontWeight: '700',
-    color: 'rgba(255,190,190,0.95)',
-    letterSpacing: 0.7, lineHeight: 15,
-  },
-
-  // Hero seat: shows BELOW the table, no avatar (cards represent hero)
-  heroPosChip: {
-    paddingHorizontal: 10, paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: 'rgba(37,99,235,0.30)',
-    borderWidth: 1.5, borderColor: 'rgba(80,140,255,0.60)',
-  },
-  heroPosText: {
-    fontSize: 12, fontWeight: '800', color: '#FFFFFF',
-    letterSpacing: 0.8, lineHeight: 15,
-  },
-  heroStack: {
-    marginTop: 3, fontSize: 11, fontWeight: '500',
-    color: 'rgba(180,210,255,0.75)',
-  },
-  heroYourTurnGlow: {
-    shadowColor: '#3B82F6',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.80, shadowRadius: 16, elevation: 8,
-  },
-
-  // Dealer button — on the felt beside BTN/Hero's cards
-  dealerButton: {
-    position: 'absolute',
-    width: 28, height: 28, borderRadius: 14,
-    backgroundColor: '#F0EBD4',
-    borderWidth: 2, borderColor: '#C8A000',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.65, shadowRadius: 5, elevation: 7,
-  },
-  dealerText: {
-    fontWeight: '900', fontSize: 13, color: '#1A1400', lineHeight: 15,
-  },
-
-  // Villain bet badge
-  betBadgeWrap: {
-    position: 'absolute',
-  },
-  betBadgeChipRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  betBadgePill: {
-    backgroundColor: 'rgba(8,10,18,0.85)',
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-  },
-  betBadgeText: {
-    fontWeight: '800',
-    fontSize: 12,
-    letterSpacing: 0.4,
-  },
-
-  // Hero cards — positioned above table oval bottom edge, clear of control panel
-  heroCardsContainer: {
-    position: 'absolute',
-    bottom: 30, left: 0, right: 0,
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  // Overlays
-  centerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  errorBar: {
-    position: 'absolute',
-    left: 16, right: 16,
-    padding: 10,
-    backgroundColor: 'rgba(239,68,68,0.14)',
-    borderRadius: 10,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(239,68,68,0.25)',
-  },
-
-  // ── CONTROL PANEL ────────────────────────────────────────────────────────
-  controlPanel: {
-    position: 'absolute',
-    left: 0, right: 0,
-    bottom: 0,
-    zIndex: 50,
-    backgroundColor: '#0C0E16',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.07)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.65,
-    shadowRadius: 18,
-    elevation: 22,
-    paddingTop: 8,
-    paddingHorizontal: 14,
-    paddingBottom: 6,
-  },
-  // Panel: loading state
-  panelLoadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    paddingVertical: 18,
-  },
-  panelLoadingText: {
-    color: 'rgba(200,215,240,0.75)',
-    fontSize: 14,
-  },
-
-  // Panel: "New Drill" start button
-  startDrillBtn: {
-    marginVertical: 4,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: '#1751A0',
-    borderWidth: 1,
-    borderColor: 'rgba(100,160,255,0.40)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#1D4ED8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.55,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  startDrillBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 17,
-    letterSpacing: 0.4,
-  },
-
-  controlInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-    paddingHorizontal: 2,
-  },
-  controlInfoText: {
-    color: 'rgba(200,215,240,0.85)',
-    fontSize: 13,
+  raiseInlineAdjustText: {
+    color: '#FFF',
+    fontSize: 26,
     fontWeight: '500',
+    lineHeight: 30,
   },
-  controlPotPill: {
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-  },
-  controlPotText: {
-    color: 'rgba(255,255,255,0.90)',
-    fontWeight: '700',
-    fontSize: 12,
-    letterSpacing: 0.8,
-  },
-  controlBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'center',
-  },
-  controlBtnPressable: { flex: 1 },
-  controlBtn: {
-    height: 46,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-  },
-
-  btnFold: {
-    backgroundColor: '#1E1E28',
-    borderWidth: 1.5,
-    borderColor: 'rgba(239,68,68,0.30)',
-  },
-  btnFoldText: { color: '#FF8080', fontWeight: '700', fontSize: 16 },
-
-  btnCall: {
-    backgroundColor: '#0F3478',
-    borderWidth: 1,
-    borderColor: 'rgba(100,150,255,0.35)',
-    shadowColor: '#1D4ED8',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.50,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  btnCallText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
-
-  raiseGroup: {
-    flex: 1.3,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  raiseAdjBtn: {
-    width: 36, height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.07)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  raiseAdjText: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: 'rgba(255,210,80,0.9)',
-    lineHeight: 22,
-  },
-  btnRaise: {
-    backgroundColor: '#7A4E00',
-    borderWidth: 1,
-    borderColor: 'rgba(255,185,0,0.40)',
-    shadowColor: '#C88000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.55,
-    shadowRadius: 8,
-    elevation: 6,
-    gap: 1,
-  },
-  btnRaiseLabel: {
-    color: 'rgba(255,200,60,0.80)',
-    fontWeight: '700',
-    fontSize: 10,
-    letterSpacing: 1.2,
-    lineHeight: 12,
-  },
-  btnRaiseSize: {
-    color: '#FFD60A',
-    fontWeight: '800',
-    fontSize: 15,
-    lineHeight: 18,
-  },
-
-  // ── RESULT MODAL ──────────────────────────────────────────────────────────
-  overlayBackdrop: {
+  raiseInlineCenter: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
+    height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 24,
   },
-  overlayCard: {
-    width: '100%',
-    maxWidth: 360,
-    padding: 22,
-    backgroundColor: '#13161E',
-    borderRadius: 18,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 16,
-  },
-  overlayBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-    borderRadius: 10,
-    marginBottom: 16,
-  },
-  overlayExplanation: {
-    color: '#C8D0E0',
-    marginBottom: 22,
-    lineHeight: 23,
-    fontSize: 15,
-  },
-  nextButton: {
-    backgroundColor: '#1751A0',
-    borderRadius: 14,
-    paddingVertical: 15,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(100,150,255,0.3)',
-  },
-  nextButtonText: { fontWeight: '700', fontSize: 15 },
+
+  btnAction: { flex: 1, borderRadius: 8, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: {width:0, height:2}, shadowOpacity: 0.5, shadowRadius: 4, elevation: 4 },
+  btnActionLabel: { color: '#FFF', fontWeight: '900', fontSize: 18, textTransform: 'uppercase', letterSpacing: 1 },
+  btnActionSub: { color: 'rgba(255,255,255,0.8)', fontWeight: '800', fontSize: 14, marginTop: 2 },
+
+  gridRowSizing: { flexDirection: 'row', gap: 8, height: 54 },
+  btnSizing: { flex: 1, backgroundColor: THEME.BTN_RAISE, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  btnActionText: { color: '#FFF', fontWeight: '900', fontSize: 18 },
+
+  feedbackContainer: { backgroundColor: '#1F2937', borderRadius: 8, overflow: 'hidden', marginBottom: 8 },
+  feedbackHeader: { paddingVertical: 12, alignItems: 'center' },
+  feedbackTitle: { color: '#FFF', fontWeight: '900', fontSize: 16, textTransform: 'uppercase', letterSpacing: 1 },
+  feedbackBody: { color: '#E5E7EB', padding: 16, fontSize: 15, textAlign: 'center', lineHeight: 22, fontWeight: '500' },
+  btnNext: { backgroundColor: THEME.BTN_CALL, margin: 16, marginTop: 0, height: 56, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
+  btnNextText: { color: '#FFF', fontWeight: '900', fontSize: 16, textTransform: 'uppercase' },
 });

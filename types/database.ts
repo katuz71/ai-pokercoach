@@ -128,7 +128,10 @@ export type Database = {
           user_action: string;
           correct_action: string;
           mistake_tag: string | null;
+          mistake_reason: string | null;
           created_at: string;
+          is_correct: boolean;
+          leak_tag: string | null;
         };
         Insert: {
           id?: string;
@@ -137,7 +140,10 @@ export type Database = {
           user_action: string;
           correct_action: string;
           mistake_tag?: string | null;
+          mistake_reason?: string | null;
           created_at?: string;
+          is_correct?: boolean;
+          leak_tag?: string | null;
         };
         Update: {
           id?: string;
@@ -146,7 +152,10 @@ export type Database = {
           user_action?: string;
           correct_action?: string;
           mistake_tag?: string | null;
+          mistake_reason?: string | null;
           created_at?: string;
+          is_correct?: boolean;
+          leak_tag?: string | null;
         };
       };
       daily_checkins: {
@@ -216,6 +225,7 @@ export type Database = {
           repetition: number;
           created_at: string;
           updated_at: string;
+          drill_type: string;
         };
         Insert: {
           id?: string;
@@ -228,6 +238,7 @@ export type Database = {
           repetition?: number;
           created_at?: string;
           updated_at?: string;
+          drill_type?: string;
         };
         Update: {
           id?: string;
@@ -240,6 +251,36 @@ export type Database = {
           repetition?: number;
           created_at?: string;
           updated_at?: string;
+          drill_type?: string;
+        };
+      };
+      chat_threads: {
+        Row: {
+          id: string;
+          user_id: string;
+          title: string | null;
+          coach_style: string | null;
+          created_at: string;
+          updated_at: string;
+          leak_tag: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          title?: string | null;
+          coach_style?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          leak_tag?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          title?: string | null;
+          coach_style?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          leak_tag?: string | null;
         };
       };
     };
@@ -260,3 +301,4 @@ export type TrainingEventRow = Database['public']['Tables']['training_events']['
 export type DailyCheckinRow = Database['public']['Tables']['daily_checkins']['Row'];
 export type ActionPlanRow = Database['public']['Tables']['action_plans']['Row'];
 export type DrillQueueRow = Database['public']['Tables']['drill_queue']['Row'];
+export type ChatThreadRow = Database['public']['Tables']['chat_threads']['Row'];

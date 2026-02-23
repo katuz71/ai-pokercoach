@@ -12,9 +12,22 @@ import { AppText } from '../../components/AppText';
 import { Card } from '../../components/Card';
 import { LeakSummary } from '../../types/leaks';
 import { DailyCheckin } from '../../types/checkin';
-import { getLeakDisplay } from '../../lib/leakCatalog';
+import { getLeakDisplay, normalizeLeakTag } from '../../lib/leakCatalog';
 import { ActionPlanResponse, ActionPlanItem } from '../../types/actionPlan';
 import { getFunctionsErrorDetails } from '../../lib/functionsError';
+
+const MISTAKE_REASON_KEYS = ['range', 'sizing', 'position', 'board', 'stack', 'unknown'] as const;
+type MistakeReasonKey = (typeof MISTAKE_REASON_KEYS)[number];
+
+function normalizeMistakeReason(r: string | null | undefined): MistakeReasonKey {
+  if (!r || !String(r).trim()) return 'unknown';
+  const lower = String(r).trim().toLowerCase();
+  return MISTAKE_REASON_KEYS.includes(lower as MistakeReasonKey) ? (lower as MistakeReasonKey) : 'unknown';
+}
+
+function mistakeReasonLabel(key: MistakeReasonKey): string {
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
 
 const labelByStyle: Record<CoachStyle, string> = {
   toxic: 'TOXIC',
@@ -46,6 +59,11 @@ export default function ProfileScreen() {
   const [actionPlan, setActionPlan] = useState<ActionPlanResponse | null>(null);
   const [loadingActionPlan, setLoadingActionPlan] = useState(false);
   const [actionPlanError, setActionPlanError] = useState<string | null>(null);
+
+  // Most common mistake reasons (7 days) for Coach Review
+  const [mistakeReasons7d, setMistakeReasons7d] = useState<Array<{ reason: MistakeReasonKey; count: number }>>([]);
+  const [loadingMistakeReasons, setLoadingMistakeReasons] = useState(false);
+  const [mistakeReasonsError, setMistakeReasonsError] = useState<string | null>(null);
 
   // Sync action plan with recent activity
   const syncActionPlan = async () => {
@@ -123,6 +141,47 @@ export default function ProfileScreen() {
     }
   };
 
+  const loadMistakeReasons7d = async () => {
+    if (!user) return;
+    setLoadingMistakeReasons(true);
+    setMistakeReasonsError(null);
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('training_events')
+        .select('mistake_reason')
+        .eq('user_id', user.id)
+        .eq('is_correct', false)
+        .gte('created_at', sevenDaysAgo);
+
+      if (error) throw error;
+
+      const counts: Record<MistakeReasonKey, number> = {
+        range: 0,
+        sizing: 0,
+        position: 0,
+        board: 0,
+        stack: 0,
+        unknown: 0,
+      };
+      (data ?? []).forEach((row: { mistake_reason: string | null }) => {
+        const key = normalizeMistakeReason(row.mistake_reason);
+        counts[key] += 1;
+      });
+      const top3 = (MISTAKE_REASON_KEYS as readonly MistakeReasonKey[])
+        .filter((k) => counts[k] > 0)
+        .map((reason) => ({ reason, count: counts[reason] }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3);
+      setMistakeReasons7d(top3);
+    } catch (err: any) {
+      console.error('[Profile] Failed to load mistake reasons:', err);
+      setMistakeReasonsError(err?.message ?? 'Ошибка загрузки');
+    } finally {
+      setLoadingMistakeReasons(false);
+    }
+  };
+
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -133,6 +192,7 @@ export default function ProfileScreen() {
     loadTodayCheckin();
     checkTodayActivity();
     loadCurrentActionPlan();
+    loadMistakeReasons7d();
   }, [user]);
 
   const loadProfile = async () => {
@@ -592,6 +652,26 @@ export default function ProfileScreen() {
               </Card>
             )}
 
+            {/* Most common mistake reasons (7 days) */}
+            <Card style={styles.mistakeReasonsCard}>
+              <AppText variant="h3" style={styles.mistakeReasonsTitle}>
+                Most common mistake reasons (7 days)
+              </AppText>
+              {loadingMistakeReasons ? (
+                <AppText variant="body" color="#A7B0C0">Loading…</AppText>
+              ) : mistakeReasonsError ? (
+                <AppText variant="body" color="#FF9800">{mistakeReasonsError}</AppText>
+              ) : mistakeReasons7d.length === 0 ? (
+                <AppText variant="body" color="#A7B0C0">No mistakes in last 7 days.</AppText>
+              ) : (
+                mistakeReasons7d.map(({ reason, count }, idx) => (
+                  <AppText key={reason} variant="body" style={styles.mistakeReasonLine}>
+                    {idx + 1}) {mistakeReasonLabel(reason)} — {count}
+                  </AppText>
+                ))
+              )}
+            </Card>
+
             {leakSummary && (
               <View style={styles.leakSummaryContainer}>
                 {/* Top Leaks */}
@@ -618,6 +698,28 @@ export default function ProfileScreen() {
                     </Card>
                   );
                 })}
+
+                {/* Train this — top leak */}
+                {leakSummary.top_leaks.length > 0 && (() => {
+                  const rawTag = leakSummary.top_leaks[0].tag;
+                  const topLeakTag = normalizeLeakTag(rawTag) || rawTag?.trim();
+                  if (!topLeakTag) return null;
+                  return (
+                    <TouchableOpacity
+                      style={styles.trainThisButton}
+                      onPress={() =>
+                        router.push({
+                          pathname: '/(tabs)/train',
+                          params: { startSessionLeakTag: topLeakTag },
+                        })
+                      }
+                    >
+                      <AppText variant="label" color="#4C9AFF" style={styles.trainThisButtonText}>
+                        Train this
+                      </AppText>
+                    </TouchableOpacity>
+                  );
+                })()}
 
                 {/* Improvement Plan */}
                 <AppText variant="h3" style={styles.leakSubtitle}>
@@ -902,6 +1004,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 16,
     marginTop: 12,
+  },
+  mistakeReasonsCard: {
+    padding: 16,
+    backgroundColor: '#0A0E14',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    gap: 8,
+    marginTop: 12,
+  },
+  mistakeReasonsTitle: {
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  mistakeReasonLine: {
+    fontSize: 14,
+  },
+  trainThisButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: 'rgba(76, 154, 255, 0.15)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(76, 154, 255, 0.4)',
+    marginTop: 8,
+  },
+  trainThisButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   leakSummaryContainer: {
     marginTop: 16,

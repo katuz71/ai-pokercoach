@@ -1,15 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
-import { ScreenWrapper } from '../../components/ScreenWrapper';
-import { AppText } from '../../components/AppText';
-import { Card } from '../../components/Card';
-import { supabase } from '../../lib/supabase';
-import { LeakSummaryShort } from '../../types/tools';
-import { normalizeLeakTag, getLeakDisplay } from '../../lib/leakCatalog';
+import { useRouter } from 'expo-router';
+import { ScreenWrapper } from '../../../components/ScreenWrapper';
+import { AppText } from '../../../components/AppText';
+import { Card } from '../../../components/Card';
+import { supabase } from '../../../lib/supabase';
+import { LeakSummaryShort } from '../../../types/tools';
+import { normalizeLeakTag, getLeakDisplay } from '../../../lib/leakCatalog';
 
 type StreetOption = 'two_cards' | 'one_card';
 
 export default function ToolsScreen() {
+  const router = useRouter();
   // Pot Odds state
   const [potSize, setPotSize] = useState('');
   const [betToCall, setBetToCall] = useState('');
@@ -131,6 +133,20 @@ export default function ToolsScreen() {
             <AppText variant="caption" color="#A7B0C0">AI Poker Coach</AppText>
             <AppText variant="h1" style={styles.title}>Калькуляторы</AppText>
           </View>
+
+          {/* Insights card */}
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => router.push('/tools/insights')}
+          >
+            <Card style={styles.insightsCard}>
+              <AppText variant="h3" style={styles.cardTitle}>Insights</AppText>
+              <AppText variant="caption" style={styles.cardDescription}>
+                Графики и сводки по тренировкам за 7 и 30 дней
+              </AppText>
+              <AppText variant="label" color="#4C9AFF">Открыть →</AppText>
+            </Card>
+          </TouchableOpacity>
 
           {/* Coach Tip (only if chasing_draws leak exists) */}
           {!loadingLeaks && hasChasingDrawsLeak && (
@@ -376,6 +392,11 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 32,
+  },
+  insightsCard: {
+    padding: 20,
+    backgroundColor: 'rgba(76, 154, 255, 0.06)',
+    borderColor: 'rgba(76, 154, 255, 0.2)',
   },
   coachTipCard: {
     padding: 16,

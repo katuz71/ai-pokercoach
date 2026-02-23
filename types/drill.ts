@@ -29,6 +29,7 @@ export type DrillGradeResult = {
 export type TableDrillPos = 'BTN' | 'SB' | 'BB' | 'CO' | 'HJ' | 'UTG' | 'MP';
 export type TableDrillStreet = 'flop' | 'turn' | 'river';
 export type TableDrillCorrectAction = 'fold' | 'call' | 'raise';
+export type RaiseSizingOption = '2.5x' | '3x' | 'overbet';
 export type ActionToHeroType = 'bet' | 'check' | 'raise';
 
 export type TableDrillScenario = {
@@ -48,6 +49,13 @@ export type TableDrillScenario = {
     type: ActionToHeroType;
     size_bb: number;
   };
-  correct_action: TableDrillCorrectAction;
+  correct_action?: TableDrillCorrectAction;
   explanation: string;
+  /** action_decision (default) | raise_sizing */
+  drill_type?: 'action_decision' | 'raise_sizing';
+  /** For raise_sizing: options and correct choice */
+  options?: [string, string, string];
+  correct_option?: string;
+  rule_of_thumb?: string;
+  leak_tag?: string;
 };

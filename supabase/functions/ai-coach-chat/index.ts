@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { requireUserClient, AuthError } from '../_shared/userAuth.ts';
+import { enforceAllowedLeakTag } from '../_shared/leaks.ts';
 
 type CoachChatBody = {
   thread_id: string | null;
@@ -16,6 +17,12 @@ type ChatMessageRow = {
   role: string;
   content: string;
   created_at: string;
+};
+
+type ChatThreadRow = {
+  id: string;
+  title: string | null;
+  leak_tag: string | null;
 };
 
 function json(data: unknown, status = 200) {
@@ -94,10 +101,20 @@ function sanitizeLeakClaims(text: string, hasEvidence: boolean): string {
   return 'На основе текущего диалога (без накопленной статистики): ' + out;
 }
 
+type LeakStats = {
+  rating?: number;
+  attempts_7d?: number;
+  correct_7d?: number;
+  streak_correct?: number;
+  top_mistakes?: string[];
+};
+
 function buildSystemPrompt(
   coachStyle: string,
   memoryLines: { text: string; evidenceIds?: string[] }[],
-  conversationBlock: string
+  conversationBlock: string,
+  leakTag: string | null,
+  leakStats: LeakStats | null
 ): string {
   const style = (coachStyle || 'mental').toLowerCase();
   const tone =
@@ -116,8 +133,27 @@ function buildSystemPrompt(
 - Если говоришь про паттерн игрока (часто/всегда/обычно) — укажи evidence_message_ids или не используй частотные слова. Без evidence не утверждай частоту.
 `;
 
+  if (leakTag) {
+    system += `\n\nЭтот тред сфокусирован на лике: ${leakTag}. Держи ответы в рамках этого лика, если пользователь не просит иначе.
+- Всегда давай: (1) краткий диагноз (1–2 строки), (2) правило большого пальца, (3) одну идею дрилла, привязанную к этому лику.
+- Избегай абсолютов («всегда/никогда»), если нет evidence_ids.
+
+`;
+    if (leakStats && (leakStats.rating != null || leakStats.top_mistakes?.length)) {
+      const parts: string[] = [];
+      if (leakStats.rating != null) parts.push(`rating=${leakStats.rating}`);
+      if (leakStats.attempts_7d != null && leakStats.correct_7d != null && leakStats.attempts_7d > 0) {
+        const acc7 = Math.round((leakStats.correct_7d / leakStats.attempts_7d) * 100);
+        parts.push(`7d accuracy=${acc7}%`);
+      }
+      if (leakStats.streak_correct != null) parts.push(`streak_correct=${leakStats.streak_correct}`);
+      if (leakStats.top_mistakes?.length) parts.push(`common mistakes: ${leakStats.top_mistakes.join(', ')}`);
+      system += `Player stats for this leak: ${parts.join(', ')}.\n`;
+    }
+  }
+
   if (memoryLines.length > 0) {
-    system += '\n\nPlayer memory (релевантные факты о игроке):\n';
+    system += '\n\nRelevant memory snippets (Player memory):\n';
     for (const line of memoryLines) {
       system += line.text;
       if (line.evidenceIds?.length) {
@@ -214,11 +250,12 @@ serve(async (req) => {
     let newTitle = '';
     let last20: ChatMessageRow[];
     let systemPrompt: string;
+    let effectiveLeakTag: string | null = null;
 
     if (isContinue) {
       const { data: thread, error: threadError } = await supabaseUser
         .from('chat_threads')
-        .select('id, title')
+        .select('id, title, leak_tag')
         .eq('id', body.thread_id)
         .eq('user_id', userId)
         .maybeSingle();
@@ -226,7 +263,8 @@ serve(async (req) => {
       if (threadError || !thread) {
         return json({ error: 'thread_not_found', detail: 'Thread not found or access denied' }, 404);
       }
-      threadId = thread.id;
+      threadId = (thread as ChatThreadRow).id;
+      effectiveLeakTag = enforceAllowedLeakTag((thread as ChatThreadRow).leak_tag);
 
       const { data: recentMessages, error: messagesError } = await supabaseUser
         .from('chat_messages')
@@ -243,7 +281,7 @@ serve(async (req) => {
       if (body.thread_id) {
         const { data: thread, error: threadError } = await supabaseUser
           .from('chat_threads')
-          .select('id, title')
+          .select('id, title, leak_tag')
           .eq('id', body.thread_id)
           .eq('user_id', userId)
           .maybeSingle();
@@ -251,8 +289,10 @@ serve(async (req) => {
         if (threadError || !thread) {
           return json({ error: 'thread_not_found', detail: 'Thread not found or access denied' }, 404);
         }
-        threadId = thread.id;
-        const hasNoTitle = thread.title == null || String(thread.title).trim() === '';
+        const t = thread as ChatThreadRow;
+        threadId = t.id;
+        effectiveLeakTag = enforceAllowedLeakTag(t.leak_tag);
+        const hasNoTitle = t.title == null || String(t.title).trim() === '';
         if (hasNoTitle) {
           shouldSetTitle = true;
           newTitle = threadTitleFromMessage(message);
@@ -305,15 +345,56 @@ serve(async (req) => {
       .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n');
 
+    let leakStats: LeakStats | null = null;
+    if (effectiveLeakTag) {
+      const { data: ratingRow } = await supabaseUser
+        .from('skill_ratings')
+        .select('rating, attempts_7d, correct_7d, streak_correct')
+        .eq('user_id', userId)
+        .eq('leak_tag', effectiveLeakTag)
+        .maybeSingle();
+      if (ratingRow) {
+        leakStats = {
+          rating: (ratingRow as { rating?: number }).rating,
+          attempts_7d: (ratingRow as { attempts_7d?: number }).attempts_7d,
+          correct_7d: (ratingRow as { correct_7d?: number }).correct_7d,
+          streak_correct: (ratingRow as { streak_correct?: number }).streak_correct,
+        };
+      }
+      const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: mistakeRows } = await supabaseUser
+        .from('training_events')
+        .select('mistake_reason')
+        .eq('user_id', userId)
+        .eq('leak_tag', effectiveLeakTag)
+        .eq('is_correct', false)
+        .gte('created_at', since30d);
+      if (Array.isArray(mistakeRows) && mistakeRows.length > 0) {
+        const counts: Record<string, number> = {};
+        for (const row of mistakeRows) {
+          const r = (row as { mistake_reason?: string | null }).mistake_reason;
+          const key = (r && String(r).trim()) || 'unknown';
+          counts[key] = (counts[key] ?? 0) + 1;
+        }
+        const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        const top_mistakes = sorted.slice(0, 2).map(([reason]) => reason);
+        leakStats = leakStats ?? {};
+        leakStats.top_mistakes = top_mistakes;
+      }
+    }
+
     const textForRag = isContinue
       ? (last20.filter((m) => m.role === 'user').pop()?.content ?? '')
       : message;
+    const textForEmbedding = effectiveLeakTag
+      ? `leak: ${effectiveLeakTag} ${textForRag}`.trim()
+      : textForRag;
     let memoryLines: { text: string; evidenceIds?: string[] }[] = [];
     let hasEvidence = false;
     const evidence: CoachChatEvidence = { memory_ids: [], message_ids: [], tags: [] };
     try {
-      if (textForRag) {
-        const embedding = await getEmbedding(openAiKey, textForRag.slice(0, 8000));
+      if (textForEmbedding) {
+        const embedding = await getEmbedding(openAiKey, textForEmbedding.slice(0, 8000));
         const { data: memories, error: rpcError } = await supabaseUser.rpc('match_coach_memory', {
           query_embedding: embedding,
           match_threshold: 0.5,
@@ -337,7 +418,29 @@ serve(async (req) => {
       console.warn('[ai-coach-chat] RAG embedding/match failed:', embedErr);
     }
 
-    const baseSystemPrompt = buildSystemPrompt(coachStyle, memoryLines, conversationBlock);
+    const acc7 =
+      leakStats?.attempts_7d != null &&
+      leakStats?.correct_7d != null &&
+      leakStats.attempts_7d > 0
+        ? Math.round((leakStats.correct_7d / leakStats.attempts_7d) * 100)
+        : undefined;
+    console.log(
+      JSON.stringify({
+        thread_id: threadId,
+        leak_tag: effectiveLeakTag ?? undefined,
+        rating: leakStats?.rating,
+        acc7,
+        top_mistakes: leakStats?.top_mistakes,
+      })
+    );
+
+    const baseSystemPrompt = buildSystemPrompt(
+      coachStyle,
+      memoryLines,
+      conversationBlock,
+      effectiveLeakTag,
+      leakStats
+    );
     if (isContinue) {
       systemPrompt = baseSystemPrompt +
         '\n\nContinue your previous answer from where it stopped. Do not repeat. Here is the partial assistant text:\n\n' +

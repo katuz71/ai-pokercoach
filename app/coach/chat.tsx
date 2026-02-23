@@ -24,6 +24,32 @@ import { ScreenWrapper } from '../../components/ScreenWrapper';
 import { AppText } from '../../components/AppText';
 import { Card } from '../../components/Card';
 import { callEdge } from '../../lib/edge';
+
+/** One item from coach_memory (frontend select). similarity optional; confidence from recency. */
+type MemoryItem = {
+  id: string;
+  content: string;
+  metadata?: { analysis_id?: string; source_type?: string; leak_tag?: string; [key: string]: unknown };
+  created_at?: string;
+  similarity?: number;
+};
+
+const MEMORY_PREVIEW_LEN = 140;
+function memoryPreview(text: string): string {
+  const t = (text ?? '').trim();
+  if (t.length <= MEMORY_PREVIEW_LEN) return t;
+  return t.slice(0, MEMORY_PREVIEW_LEN).trim() + '…';
+}
+/** Confidence from recency: <=3 days High, <=14 days Med, else Low. */
+function recencyConfidence(createdAt: string | undefined): 'High' | 'Med' | 'Low' {
+  if (!createdAt) return 'Low';
+  const created = new Date(createdAt).getTime();
+  const now = Date.now();
+  const days = (now - created) / (24 * 60 * 60 * 1000);
+  if (days <= 3) return 'High';
+  if (days <= 14) return 'Med';
+  return 'Low';
+}
 import { ensureSession } from '../../lib/ensureSession';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
@@ -67,6 +93,7 @@ function isStreamErrorEvent(e: StreamEvent): e is StreamErrorEvent {
 import { TopLeak } from '../../types/leaks';
 import { ActionPlanItem } from '../../types/actionPlan';
 import { formatCoachText } from '../../lib/textFormat';
+import { normalizeLeakTag, getLeakDisplay } from '../../lib/leakCatalog';
 
 /** Distance from bottom (px) within which we consider user "at bottom" for auto-scroll. */
 const NEAR_BOTTOM_THRESHOLD_PX = 120;
@@ -116,11 +143,14 @@ type EvidenceSourceMessage = {
 
 export default function CoachChatScreen() {
   const router = useRouter();
-  const { thread_id: paramThreadId } = useLocalSearchParams<{ thread_id?: string }>();
+  const params = useLocalSearchParams<{ thread_id?: string; leakTag?: string }>();
+  const paramThreadId = params.thread_id;
+  const paramLeakTag = params.leakTag;
   const flatListRef = useRef<FlatList>(null);
   const { user } = useAuth();
 
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [threadLeakTag, setThreadLeakTag] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -147,7 +177,12 @@ export default function CoachChatScreen() {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [ttsMode, setTtsMode] = useState<TtsMode>('manual');
   const [messageIdWithTapHint, setMessageIdWithTapHint] = useState<string | null>(null);
+  const [memoryItems, setMemoryItems] = useState<MemoryItem[]>([]);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState(false);
+  const [memoryModalItem, setMemoryModalItem] = useState<MemoryItem | null>(null);
 
+  const memoryDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isNearBottomRef = useRef(true);
   const ttsEnabledRef = useRef(false);
   const ttsModeRef = useRef<TtsMode>('manual');
@@ -245,8 +280,9 @@ export default function CoachChatScreen() {
     scrollIntentRef.current = false;
   }, [messages]);
 
-  // Load thread and messages: by thread_id param or last thread
+  // Load thread and messages: by thread_id param or last thread; handle leakTag (create/update thread.leak_tag)
   const effectiveThreadId = typeof paramThreadId === 'string' ? paramThreadId : Array.isArray(paramThreadId) ? paramThreadId[0] : undefined;
+  const normalizedLeakTag = (typeof paramLeakTag === 'string' ? normalizeLeakTag(paramLeakTag) : '') || null;
   useEffect(() => {
     if (!user) {
       setLoadingThread(false);
@@ -257,26 +293,58 @@ export default function CoachChatScreen() {
       try {
         await ensureSession();
         let targetId: string | undefined;
+        let resolvedLeakTag: string | null = null;
+
         if (effectiveThreadId) {
           const { data: thread } = await supabase
             .from('chat_threads')
-            .select('id')
+            .select('id, leak_tag')
             .eq('id', effectiveThreadId)
+            .eq('user_id', user.id)
             .maybeSingle();
           if (cancelled) return;
-          targetId = (thread as { id: string } | null)?.id;
-        } else {
+          const row = thread as { id: string; leak_tag: string | null } | null;
+          if (row?.id) {
+            targetId = row.id;
+            resolvedLeakTag = row.leak_tag ?? null;
+            if (resolvedLeakTag == null && normalizedLeakTag != null) {
+              // @ts-expect-error chat_threads leak_tag update not in generated client types
+              const { error } = await supabase.from('chat_threads').update({ leak_tag: normalizedLeakTag }).eq('id', targetId).eq('user_id', user.id);
+              if (!cancelled && !error) resolvedLeakTag = normalizedLeakTag;
+            }
+          }
+        } else if (normalizedLeakTag) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- chat_threads Insert type not inferred by client
+          const { data: newRow, error } = await supabase
+            .from('chat_threads')
+            .insert({ user_id: user.id, leak_tag: normalizedLeakTag } as any)
+            .select('id')
+            .single();
+          if (cancelled) return;
+          if (!error && newRow) {
+            targetId = (newRow as { id: string }).id;
+            resolvedLeakTag = normalizedLeakTag;
+          }
+        }
+
+        if (!targetId) {
           const { data: threads } = await supabase
             .from('chat_threads')
-            .select('id')
+            .select('id, leak_tag')
             .eq('user_id', user.id)
             .order('updated_at', { ascending: false })
             .limit(1);
           if (cancelled) return;
-          targetId = (threads?.[0] as { id: string } | undefined)?.id;
+          const first = threads?.[0] as { id: string; leak_tag: string | null } | undefined;
+          if (first) {
+            targetId = first.id;
+            resolvedLeakTag = first.leak_tag ?? null;
+          }
         }
+
         if (targetId) {
           setThreadId(targetId);
+          setThreadLeakTag(resolvedLeakTag);
           const { data: rows } = await supabase
             .from('chat_messages')
             .select('id, role, content, created_at')
@@ -301,9 +369,14 @@ export default function CoachChatScreen() {
           }
         } else {
           setThreadId(null);
+          setThreadLeakTag(null);
           setMessages([]);
           setHasMoreMessages(false);
           setOldestMessageCursor(null);
+        }
+
+        if (!cancelled && (paramLeakTag != null || normalizedLeakTag != null)) {
+          router.setParams({ leakTag: undefined });
         }
       } catch (e) {
         if (!cancelled) console.warn('[CoachChat] Load thread failed:', e);
@@ -312,7 +385,7 @@ export default function CoachChatScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [user?.id, effectiveThreadId]);
+  }, [user?.id, effectiveThreadId, normalizedLeakTag, paramLeakTag]);
 
   useEffect(() => {
     let cancelled = false;
@@ -586,6 +659,88 @@ export default function CoachChatScreen() {
     setStoppedLastUserMessageText(null);
   };
 
+  const refreshMemory = useCallback(async () => {
+    if (!threadId || !threadLeakTag) {
+      setMemoryItems([]);
+      setMemoryError(false);
+      setMemoryLoading(false);
+      return;
+    }
+    const leakTitle = getLeakDisplay(threadLeakTag).title;
+    setMemoryLoading(true);
+    setMemoryError(false);
+    try {
+      type Row = { id: string; content: string; metadata?: Record<string, unknown>; created_at?: string };
+      let list: MemoryItem[] = [];
+      let hadError = false;
+
+      const { data: dataA, error: errA } = await supabase
+        .from('coach_memory')
+        .select('id, content, metadata, created_at')
+        .eq('metadata->>leak_tag', threadLeakTag)
+        .order('created_at', { ascending: false })
+        .limit(3) as { data: Row[] | null; error: unknown };
+
+      if (errA) hadError = true;
+      if (!errA && dataA?.length) {
+        list = dataA.map((r) => ({
+          id: r.id,
+          content: r.content,
+          metadata: r.metadata,
+          created_at: r.created_at,
+        }));
+      } else {
+        const { data: dataB, error: errB } = await supabase
+          .from('coach_memory')
+          .select('id, content, metadata, created_at')
+          .ilike('content', `%${leakTitle}%`)
+          .order('created_at', { ascending: false })
+          .limit(3) as { data: Row[] | null; error: unknown };
+        if (errB) hadError = true;
+        if (!errB && dataB) {
+          list = dataB.map((r) => ({
+            id: r.id,
+            content: r.content,
+            metadata: r.metadata,
+            created_at: r.created_at,
+          }));
+        }
+      }
+      setMemoryItems(list);
+      if (list.length === 0 && hadError) setMemoryError(true);
+    } catch {
+      setMemoryItems([]);
+      setMemoryError(true);
+    } finally {
+      setMemoryLoading(false);
+    }
+  }, [threadId, threadLeakTag]);
+
+  /** Schedule refreshMemory with 1s debounce (thread change or after send). */
+  const scheduleRefreshMemory = useCallback(() => {
+    if (memoryDebounceRef.current) clearTimeout(memoryDebounceRef.current);
+    memoryDebounceRef.current = setTimeout(() => {
+      memoryDebounceRef.current = null;
+      refreshMemory();
+    }, 1000);
+  }, [refreshMemory]);
+
+  useEffect(() => {
+    if (!threadId || !threadLeakTag) {
+      setMemoryItems([]);
+      setMemoryError(false);
+      setMemoryLoading(false);
+      return;
+    }
+    scheduleRefreshMemory();
+    return () => {
+      if (memoryDebounceRef.current) {
+        clearTimeout(memoryDebounceRef.current);
+        memoryDebounceRef.current = null;
+      }
+    };
+  }, [threadId, threadLeakTag, scheduleRefreshMemory]);
+
   /** Отправляет текст сообщения тренеру через ai-coach-chat и добавляет ответ в чат (stream или JSON). isRetry: не добавлять user bubble (уже в списке). isContinue: mode "continue" с continue_context, без user bubble и без user message в БД. */
   const sendMessageToCoach = async (
     messageText: string,
@@ -792,6 +947,7 @@ export default function CoachChatScreen() {
                 }
                 setLoading(false);
                 setLoadingContext(false);
+                scheduleRefreshMemory();
                 return;
               }
               if ('delta' in payload && typeof payload.delta === 'string') {
@@ -857,6 +1013,7 @@ export default function CoachChatScreen() {
         };
         scrollIntentRef.current = true;
         setMessages((prev) => [...prev, coachMessage]);
+        scheduleRefreshMemory();
         const content = responseJson.assistant_message.content;
         const assistantId = responseJson.assistant_message.id;
         if (ttsEnabledRef.current && typeof content === 'string' && content.trim()) {
@@ -1222,9 +1379,18 @@ export default function CoachChatScreen() {
                 Chats
               </AppText>
             </TouchableOpacity>
-            <AppText variant="h2" style={styles.title}>
-              Coach Chat
-            </AppText>
+            <View style={styles.titleRow}>
+              <AppText variant="h2" style={styles.title}>
+                Coach Chat
+              </AppText>
+              {threadLeakTag != null && threadLeakTag !== '' && (
+                <View style={styles.leakBadge}>
+                  <AppText variant="caption" style={styles.leakBadgeText} numberOfLines={1}>
+                    {getLeakDisplay(threadLeakTag).title}
+                  </AppText>
+                </View>
+              )}
+            </View>
           </View>
           <View style={styles.headerRight}>
             <TouchableOpacity
@@ -1277,6 +1443,7 @@ export default function CoachChatScreen() {
             <TouchableOpacity
               onPress={() => {
                 setThreadId(null);
+                setThreadLeakTag(null);
                 setMessages([]);
                 setError(null);
                 setPendingRetry(null);
@@ -1295,6 +1462,50 @@ export default function CoachChatScreen() {
             </TouchableOpacity>
           </View>
         </View>
+
+        {/* Relevant memory (top-3 by leak_tag / leak title, frontend-only select) */}
+        {threadId && threadLeakTag && (memoryItems.length > 0 || memoryLoading || memoryError) ? (
+          <View style={styles.memoryBlock}>
+            <AppText variant="caption" style={styles.memoryBlockTitle}>
+              Relevant memory
+            </AppText>
+            {memoryLoading ? (
+              <View style={styles.memoryBlockLoading}>
+                <ActivityIndicator color="#4C9AFF" size="small" />
+              </View>
+            ) : memoryError && memoryItems.length === 0 ? (
+              <AppText variant="caption" style={styles.memoryBlockUnavailable}>
+                Memory unavailable
+              </AppText>
+            ) : (
+              <View style={styles.memoryCardsRow}>
+                {memoryItems.slice(0, 3).map((item) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={styles.memoryCard}
+                    onPress={() => {
+                      const analysisId = item.metadata?.analysis_id;
+                      if (analysisId) {
+                        setMemoryModalItem(null);
+                        router.push(`/hand/${analysisId}` as any);
+                      } else {
+                        setMemoryModalItem(item);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <AppText variant="caption" numberOfLines={3} style={styles.memoryCardText}>
+                      {memoryPreview(item.content)}
+                    </AppText>
+                    <AppText variant="caption" style={styles.memoryCardConfidence}>
+                      {recencyConfidence(item.created_at)}
+                    </AppText>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+        ) : null}
 
         {/* Error Banner: compact, Retry (if pendingRetry), Dismiss */}
         {error != null && error !== '' && (
@@ -1629,6 +1840,45 @@ export default function CoachChatScreen() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Memory item full-text modal */}
+      <Modal
+        visible={memoryModalItem != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMemoryModalItem(null)}
+      >
+        <TouchableOpacity
+          style={styles.evidenceModalOverlay}
+          activeOpacity={1}
+          onPress={() => setMemoryModalItem(null)}
+        >
+          <TouchableOpacity
+            style={styles.evidenceModalContent}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <AppText variant="h3" style={styles.evidenceModalTitle}>
+              Memory
+            </AppText>
+            {memoryModalItem ? (
+              <ScrollView style={styles.memoryModalScroll} nestedScrollEnabled>
+                <AppText variant="body" style={styles.memoryModalBody}>
+                  {memoryModalItem.content}
+                </AppText>
+              </ScrollView>
+            ) : null}
+            <TouchableOpacity
+              style={styles.evidenceModalCloseButton}
+              onPress={() => setMemoryModalItem(null)}
+            >
+              <AppText variant="label" color="#4C9AFF">
+                Close
+              </AppText>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </ScreenWrapper>
   );
 }
@@ -1661,8 +1911,28 @@ const styles = StyleSheet.create({
   chatsButton: {
     alignSelf: 'flex-start',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    flex: 1,
+    minWidth: 0,
+  },
   title: {
     fontSize: 24,
+  },
+  leakBadge: {
+    backgroundColor: 'rgba(76, 154, 255, 0.2)',
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    maxWidth: 140,
+  },
+  leakBadgeText: {
+    fontSize: 11,
+    color: '#4C9AFF',
+    fontWeight: '500',
   },
   headerRight: {
     flexDirection: 'row',
@@ -2062,5 +2332,60 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-end',
     paddingVertical: 8,
     paddingHorizontal: 16,
+  },
+  memoryBlock: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: '#0B0E14',
+  },
+  memoryBlockTitle: {
+    opacity: 0.7,
+    marginBottom: 8,
+    fontSize: 11,
+  },
+  memoryBlockLoading: {
+    paddingVertical: 8,
+  },
+  memoryBlockUnavailable: {
+    opacity: 0.5,
+    fontStyle: 'italic',
+    fontSize: 11,
+  },
+  memoryCardsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  memoryCard: {
+    flex: 1,
+    minWidth: 100,
+    maxWidth: '100%',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  memoryCardText: {
+    opacity: 0.9,
+    marginBottom: 4,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  memoryCardConfidence: {
+    fontSize: 10,
+    opacity: 0.6,
+  },
+  memoryModalScroll: {
+    maxHeight: 280,
+    marginBottom: 12,
+  },
+  memoryModalBody: {
+    opacity: 0.95,
+    lineHeight: 22,
   },
 });
