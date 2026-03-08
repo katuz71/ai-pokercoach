@@ -846,7 +846,7 @@ export default function CoachChatScreen() {
       if (contentType.includes('text/event-stream')) {
         const streamingId = `streaming-${Date.now()}`;
         scrollIntentRef.current = true;
-        setMessages((prev) => [...prev, { id: streamingId, role: 'coach', text: '', createdAt: new Date() }]);
+        setMessages((prev) => [...prev, { id: streamingId, role: 'coach', text: 'Coach is typing...', createdAt: new Date() }]);
 
         const reader = response.body?.getReader();
         if (!reader) {
@@ -905,7 +905,7 @@ export default function CoachChatScreen() {
                     const text = typeof payload.final_content === 'string' ? payload.final_content : last.text;
                     next[next.length - 1] = {
                       ...last,
-                      text,
+                      text: text === 'Coach is typing...' ? partialStreamTextRef.current : text,
                       id: payload.assistant_message_id,
                       evidence: payload.evidence,
                     };
@@ -956,7 +956,7 @@ export default function CoachChatScreen() {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last?.role === 'coach') {
-                    const newText = last.text + payload.delta;
+                    const newText = last.text === 'Coach is typing...' ? payload.delta : last.text + payload.delta;
                     partialStreamTextRef.current = newText;
                     next[next.length - 1] = { ...last, text: newText };
                   }
@@ -1272,8 +1272,8 @@ export default function CoachChatScreen() {
           <AppText variant="body" style={styles.messageText}>
             {isUser ? (
               item.text
-            ) : item.text === '' && item.id.startsWith('streaming-') ? (
-              <AppText variant="body" style={{ fontStyle: 'italic', opacity: 0.7 }}>…</AppText>
+            ) : item.id.startsWith('streaming-') && (item.text === '' || item.text === 'Coach is typing...') ? (
+              <AppText variant="body" style={{ fontStyle: 'italic', opacity: 0.9 }}>{item.text || 'Coach is typing...'}</AppText>
             ) : (
               formatCoachText(item.text).map((chunk, index) => (
                 <AppText
@@ -1381,7 +1381,7 @@ export default function CoachChatScreen() {
             </TouchableOpacity>
             <View style={styles.titleRow}>
               <AppText variant="h2" style={styles.title}>
-                Coach Chat
+                AI Coach
               </AppText>
               {threadLeakTag != null && threadLeakTag !== '' && (
                 <View style={styles.leakBadge}>
@@ -1886,9 +1886,11 @@ export default function CoachChatScreen() {
 const styles = StyleSheet.create({
   wrapper: {
     padding: 0,
+    backgroundColor: '#1B1C22',
   },
   keyboardView: {
     flex: 1,
+    backgroundColor: '#1B1C22',
   },
   header: {
     flexDirection: 'row',
@@ -2018,21 +2020,23 @@ const styles = StyleSheet.create({
   messageBubble: {
     maxWidth: '80%',
     padding: 12,
+    borderRadius: 16,
   },
   messageBubbleUser: {
-    backgroundColor: '#11161F',
-    borderColor: '#E53935',
-    borderWidth: 1,
+    backgroundColor: '#4C9AFF',
+    borderWidth: 0,
+    borderBottomRightRadius: 4,
   },
   messageBubbleCoach: {
-    backgroundColor: '#11161F',
-    borderColor: 'rgba(255, 255, 255, 0.06)',
-    borderWidth: 1,
+    backgroundColor: '#2A2E36',
+    borderWidth: 0,
+    borderBottomLeftRadius: 4,
   },
   messageText: {
     fontSize: 15,
     lineHeight: 22,
     marginBottom: 4,
+    color: '#FFFFFF',
   },
   evidenceRow: {
     flexDirection: 'row',
@@ -2157,7 +2161,7 @@ const styles = StyleSheet.create({
     gap: 8,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.06)',
-    backgroundColor: '#0B0E14',
+    backgroundColor: '#0A0E14',
   },
   contextLoadingIndicator: {
     flexDirection: 'row',
@@ -2176,7 +2180,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    backgroundColor: '#11161F',
+    backgroundColor: '#0A0E14',
     borderColor: 'rgba(255, 255, 255, 0.1)',
     borderWidth: 1,
     borderRadius: 12,

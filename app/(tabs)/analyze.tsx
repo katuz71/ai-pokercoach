@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, ActivityIndicator, Modal, ScrollView, Share, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import { ScreenWrapper } from '../../components/ScreenWrapper';
@@ -117,6 +118,7 @@ type LibraryMode = 'active' | 'trash';
 
 export default function AnalyzeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [libraryMode, setLibraryMode] = useState<LibraryMode>('active');
   const [history, setHistory] = useState<AnalysisRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -357,8 +359,11 @@ export default function AnalyzeScreen() {
   const filters: SourceFilter[] = ['all', 'manual', 'ocr', 'ocr_extract'];
 
   return (
-    <ScreenWrapper>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+    <ScreenWrapper edges={['top', 'left', 'right']}>
+      <ScrollView
+        style={[styles.scrollView, { marginBottom: -insets.bottom }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 + insets.bottom + 24 }]}
+      >
         <View style={styles.container}>
           <View style={styles.header}>
             <AppText variant="caption" color="#A7B0C0">AI Poker Coach</AppText>

@@ -137,6 +137,13 @@ function ChipStack({ amountBb }: { amountBb: number }) {
   );
 }
 
+function getScenarioRowId(scenario: TableDrillScenario | Record<string, unknown> | null): string | null {
+  if (!scenario || typeof scenario !== 'object') return null;
+  const s = scenario as Record<string, unknown>;
+  const v = s.drill_queue_id ?? s.drillQueueId ?? s.queueRowId;
+  return typeof v === 'string' ? v : null;
+}
+
 function firstPhrase(text: string, maxLen = 140): string {
   const trimmed = (text ?? '').trim();
   if (!trimmed) return '';
@@ -173,6 +180,7 @@ export default function TrainScreen() {
   const startSessionFromParamHandledRef = useRef(false);
 
   const [loading, setLoading] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scenario, setScenario] = useState<TableDrillScenario | null>(null);
   const [tableGradeResult, setTableGradeResult] = useState<TableGradeResult | null>(null);
@@ -186,6 +194,16 @@ export default function TrainScreen() {
   const [showReasonSaved, setShowReasonSaved] = useState(false);
   const reasonSavedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshInProgressRef = useRef(false);
+
+  const [phase, setPhase] = useState<'idle' | 'answering' | 'submitting' | 'graded'>('idle');
+  const submittingRef = useRef(false);
+  const lastAnsweredIdRef = useRef<string | null>(null);
+  const bootstrapAttemptedRef = useRef(false);
+  const currentDrillRowRef = useRef<DrillQueueRow | null>(null);
+
+  useEffect(() => {
+    currentDrillRowRef.current = currentDrillRow;
+  }, [currentDrillRow]);
 
   const [weeklyFocusTag, setWeeklyFocusTag] = useState<string>('fundamentals');
   const [weeklyFocusWhy, setWeeklyFocusWhy] = useState<string>('');
@@ -202,7 +220,10 @@ export default function TrainScreen() {
   const sessionIndexRef = useRef(0);
 
   const isYourTurn = scenario != null && !tableGradeResult;
-  const showActionBar = !!scenario && !tableGradeResult;
+  const isSubmitting = phase === 'submitting';
+  const scenarioRowId = scenario ? getScenarioRowId(scenario) : null;
+  const isStaleScenario = !!scenario && !!currentDrillRow && !!scenarioRowId && scenarioRowId !== currentDrillRow.id;
+  const showActionBar = !!scenario && phase === 'answering' && !tableGradeResult && !loading && !isStaleScenario;
 
   const heroCard1Opacity = useRef(new Animated.Value(0)).current;
   const heroCard1TranslateY = useRef(new Animated.Value(10)).current;
@@ -224,14 +245,82 @@ export default function TrainScreen() {
   const tableHeight = Math.min(screenHeight * 0.68, tableWidth * 1.85);
   const tableBorderRadius = tableWidth / 2; 
 
-  async function loadDueDrills() {
+  async function loadDueDrills(): Promise<DrillQueueRow[]> {
     try {
       const { data, error: err } = await supabase.rpc('rpc_get_due_drills', { limit_n: 5 } as any);
-      if (err) throw err;
-      setDueDrills(data ?? []);
+      if (err) {
+        console.error('rpc_get_due_drills error', err);
+        setDueDrills([]);
+        return [];
+      }
+      const rows = (data ?? []) as DrillQueueRow[];
+      setDueDrills(rows);
+      return rows;
     } catch (e) {
       setDueDrills([]);
+      return [];
     }
+  }
+
+  const softRefreshDueDrills = useCallback(async () => {
+    try {
+      const fresh = await loadDueDrills();
+      console.log('softRefreshDueDrills ok', { count: fresh?.length ?? 0 });
+      if (!currentDrillRowRef.current && fresh?.[0]) {
+        setCurrentDrillRow(fresh[0]);
+        console.log('softRefreshDueDrills set currentDrillRow', { id: fresh[0].id });
+      }
+    } catch (e) {
+      console.log('softRefreshDueDrills failed', { message: String(e) });
+    }
+  }, []);
+
+  async function fetchDueDrillsLocal(limit = 5): Promise<DrillQueueRow[]> {
+    try {
+      await ensureSession();
+      const { data, error: err } = await supabase.rpc('rpc_get_due_drills', { limit_n: limit } as any);
+      if (err) throw err;
+      return data ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function fetchAnyQueueLocal(limit = 5): Promise<DrillQueueRow[]> {
+    const { data, error } = await supabase
+      .from('drill_queue')
+      .select('*')
+      .order('due_at', { ascending: true, nullsFirst: true })
+      .limit(limit);
+    if (error) {
+      console.error('fetchAnyQueueLocal error', error);
+      return [];
+    }
+    return (data ?? []) as DrillQueueRow[];
+  }
+
+  async function ensureQueueRowForScenario(preferredLeakTag?: string | null, preferredDrillType?: string | null): Promise<DrillQueueRow | null> {
+    const leak = preferredLeakTag ?? 'fundamentals';
+    const fromState = dueDrills.find((r) => r.leak_tag === leak) ?? dueDrills[0] ?? null;
+    if (fromState) return fromState;
+    await ensureSession();
+    console.log('ensureQueueRowForScenario: start');
+    const boot = await callEdge('ai-bootstrap-drill-queue', {});
+    console.log('ensureQueueRowForScenario: bootstrap', JSON.stringify(boot ?? null));
+    let fresh: DrillQueueRow[] = [];
+    for (let i = 0; i < 3; i++) {
+      fresh = await fetchDueDrillsLocal(5);
+      if (fresh.length > 0) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    console.log('ensureQueueRowForScenario: due drills', JSON.stringify({ count: fresh.length }));
+    if (fresh.length === 0) {
+      const any = await fetchAnyQueueLocal(5);
+      console.log('ensureQueueRowForScenario: any queue', JSON.stringify({ count: any.length, sample: any[0]?.id ?? null, due_at: any[0]?.due_at ?? null }));
+      if (any.length > 0) fresh = [any[0]];
+    }
+    setDueDrills(fresh);
+    return fresh[0] ?? null;
   }
 
   const refreshFocus = useCallback(async () => {
@@ -247,8 +336,10 @@ export default function TrainScreen() {
     refreshInProgressRef.current = true;
     try {
       await ensureSession();
-      await callEdge('ai-bootstrap-drill-queue', {});
-      await loadDueDrills();
+      const boot = await callEdge('ai-bootstrap-drill-queue', {});
+      console.log('refreshTrain: bootstrap result', JSON.stringify(boot ?? null));
+      const data = await loadDueDrills();
+      console.log('refreshTrain: dueDrills loaded', JSON.stringify({ count: (data ?? []).length }));
     } catch (e) { } finally {
       refreshInProgressRef.current = false;
     }
@@ -292,45 +383,248 @@ export default function TrainScreen() {
   }, [scenario]);
 
   async function startDrill() {
+    console.log('startDrill press', {
+      phase,
+      currentDrillRowId: currentDrillRow?.id ?? null,
+      dueDrillsCount: dueDrills?.length ?? 0,
+      lastAnsweredId: lastAnsweredIdRef.current,
+    });
     if (sessionActive) return;
-    setLoading(true); setError(null); setScenario(null); setTableGradeResult(null); setCurrentDrillRow(null); setCurrentDrillType(null);
+
+    let resolvedRow: DrillQueueRow | null = currentDrillRow ?? dueDrills?.[0] ?? null;
+    if (!resolvedRow) {
+      console.log('startDrill no row, bootstrapping queue...');
+      await ensureSession();
+      await callEdge('ai-bootstrap-drill-queue', {});
+      const fresh = await loadDueDrills();
+      const first = fresh?.[0] ?? null;
+      if (!first) {
+        console.log('startDrill still no row after bootstrap', { count: fresh?.length ?? 0 });
+        return;
+      }
+      setCurrentDrillRow(first);
+      resolvedRow = first;
+      console.log('startDrill bootstrap ok', { firstRowId: first.id });
+    }
+
+    if (phase === 'graded' && lastAnsweredIdRef.current === resolvedRow.id) {
+      console.log('startDrill blocked: same as last answered', { id: resolvedRow.id });
+      const fresh = await loadDueDrills();
+      const next = fresh.find((r) => r.id !== lastAnsweredIdRef.current) ?? null;
+      if (!next) {
+        if (!bootstrapAttemptedRef.current) {
+          bootstrapAttemptedRef.current = true;
+          console.log('startDrill no next row, bootstrapping once...', { answeredId: lastAnsweredIdRef.current, count: fresh.length });
+
+          await ensureSession();
+          await callEdge('ai-bootstrap-drill-queue', {});
+          const fresh2 = await loadDueDrills();
+          const next2 = fresh2.find(r => r.id !== lastAnsweredIdRef.current) ?? null;
+
+          if (!next2) {
+            console.log('startDrill still no next row after bootstrap', { answeredId: lastAnsweredIdRef.current, count: fresh2.length });
+            return;
+          }
+
+          console.log('startDrill got next row after bootstrap', { answeredId: lastAnsweredIdRef.current, nextRowId: next2.id, count: fresh2.length });
+          setCurrentDrillRow(next2);
+          resolvedRow = next2;
+        } else {
+          console.log('startDrill no next row (bootstrap already attempted)', { answeredId: lastAnsweredIdRef.current, count: fresh.length });
+          return;
+        }
+      } else {
+        setCurrentDrillRow(next);
+        resolvedRow = next;
+      }
+    }
+
+    bootstrapAttemptedRef.current = false;
+    console.log('startDrill using row', { rowId: resolvedRow.id });
+    setIsGenerating(true);
+    setLoading(true);
+    setError(null);
+    setScenario(null);
+    setTableGradeResult(null);
+    setCurrentDrillRow(resolvedRow);
+    setCurrentDrillType(null);
+    setPhase('idle');
     try {
       await ensureSession();
-      const due = dueDrills[0] ?? null;
-      const leak_tag = due?.leak_tag ?? 'fundamentals';
-      const drillType = due?.drill_type === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
-      const data = await callEdge('ai-generate-table-drill', { leak_tag, drill_type: drillType });
+      const leak_tag = resolvedRow.leak_tag ?? 'fundamentals';
+      const drillType: 'action_decision' | 'raise_sizing' =
+        resolvedRow.drill_type === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
+      const data = await callEdge('ai-generate-table-drill', {
+        drill_queue_id: resolvedRow.id,
+        leak_tag,
+        drill_type: drillType,
+      });
       if (!data || !data.ok || !data.scenario) { setError('Ошибка генерации'); return; }
       setScenario(data.scenario as TableDrillScenario);
       setCurrentDrillType(drillType);
       setCurrentDifficulty((data as any)?.difficulty ?? null);
-      if (due) setCurrentDrillRow(due);
-    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
+      setPhase('answering');
+    } catch (e: any) { setError(e.message); } finally {
+      setIsGenerating(false);
+      setLoading(false);
+    }
+  }
+
+  function isSessionAuthError(statusCode: number | null, message: string): boolean {
+    if (statusCode === 401 || statusCode === 403) return true;
+    const lower = (message ?? '').toLowerCase();
+    return ['jwt', 'expired', 'unauthorized', 'auth'].some((k) => lower.includes(k));
   }
 
   async function selectTableAction(userAnswer: TableDrillCorrectAction | RaiseSizingOption) {
-    if (!scenario || !currentDrillRow) return;
-    setLoading(true); setError(null);
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+
+    if (isStaleScenario) {
+      if (phase === 'graded' && tableGradeResult) {
+        console.log('stale scenario ignored due to graded feedback', { scenarioRowId, currentRowId: currentDrillRow?.id });
+        submittingRef.current = false;
+        return;
+      }
+      console.log('stale scenario detected', { scenarioRowId, currentRowId: currentDrillRow?.id });
+      setPhase('idle');
+      setLoading(false);
+      setTableGradeResult(null);
+      setScenario(null);
+      submittingRef.current = false;
+      await startDrill();
+      return;
+    }
+
+    const activeRow = currentDrillRow ?? dueDrills?.[0] ?? null;
+    console.log('selectTableAction press', JSON.stringify({
+      phase,
+      hasScenario: !!scenario,
+      currentDrillRowId: activeRow?.id ?? null,
+      dueDrillsCount: dueDrills?.length ?? 0,
+    }));
+    if (!scenario || !activeRow) {
+      console.log('selectTableAction skip: no scenario or row');
+      submittingRef.current = false;
+      return;
+    }
+    const drillQueueId = activeRow.id;
+    setError(null);
+    setLoading(true);
+    setPhase('submitting');
+
     const drillType = (currentDrillType ?? scenario.drill_type) === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
+    const payload: Record<string, unknown> = {
+      drill_queue_id: drillQueueId,
+      scenario,
+      drill_type: drillType,
+    };
+    if (drillType === 'raise_sizing') payload.user_answer = userAnswer;
+    else { payload.user_action = userAnswer; if (userAnswer === 'raise') payload.raise_size_bb = raiseSizeBb; }
+
+    function doRecovery() {
+      setLoading(false);
+      setTableGradeResult(null);
+      setPhase('answering');
+      console.log('submit recovered to answering', { drillQueueId });
+    }
+
+    let data: any = null;
     try {
       await ensureSession();
-      const payload: any = { drill_queue_id: currentDrillRow.id, scenario, drill_type: drillType };
-      if (drillType === 'raise_sizing') payload.user_answer = userAnswer;
-      else { payload.user_action = userAnswer; if (userAnswer === 'raise') payload.raise_size_bb = raiseSizeBb; }
-      
-      const data = await callEdge('ai-submit-table-drill-result', payload);
-      if (data?.error) { setError(data.error); return; }
-      
+      console.log('selectTableAction submit', JSON.stringify({ drillQueueId, action: userAnswer }));
+      data = await callEdge('ai-submit-table-drill-result', payload);
+
+      if (data?.error) {
+        console.log('submit failed', { drillQueueId, statusCode: null, message: data.error, raw: data });
+        setError(data.error);
+        doRecovery();
+        return;
+      }
+
       setLastTrainingEventId(data?.training_event_id ?? null);
       setTableGradeResult({ isCorrect: data?.correct === true, explanation: data?.explanation ?? '' });
+      setLoading(false);
+      setPhase('graded');
+      lastAnsweredIdRef.current = drillQueueId;
+
       if (sessionActive) {
         const nextIndex = Math.min(SESSION_TARGET_COUNT, sessionIndex + 1);
-        sessionIndexRef.current = nextIndex; setSessionIndex(nextIndex);
+        sessionIndexRef.current = nextIndex;
+        setSessionIndex(nextIndex);
         setSessionCorrect((p) => p + (data?.correct ? 1 : 0));
         setSessionHistory((p) => [...p, { is_correct: data?.correct, drill_type: drillType, difficulty: currentDifficulty ?? undefined }]);
         if (nextIndex >= SESSION_TARGET_COUNT) setTableGradeResult(null);
       }
-    } catch (e: any) { setError(e.message); } finally { setLoading(false); }
+
+      const answeredId = drillQueueId;
+      const freshDueDrills = await loadDueDrills();
+      const nextRow = freshDueDrills.find((r) => r.id !== answeredId) ?? null;
+      if (nextRow) {
+        setCurrentDrillRow(nextRow);
+        console.log('preload next row', { answeredId, nextRowId: nextRow.id, count: freshDueDrills.length });
+      } else {
+        console.log('preload no next row yet', { answeredId, count: freshDueDrills.length });
+      }
+      console.log('selectTableAction done', JSON.stringify({ ok: true, nextRowId: nextRow?.id ?? null }));
+      void softRefreshDueDrills();
+    } catch (e: any) {
+      const statusMatch = (e?.message ?? '').match(/\s(\d{3}):/);
+      const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : null;
+      const message = e?.message ?? String(e);
+      console.log('submit failed', { drillQueueId, statusCode, message, raw: e });
+
+      if (isSessionAuthError(statusCode, message)) {
+        console.log('submit retrying once...', { drillQueueId });
+        try {
+          await ensureSession();
+          data = await callEdge('ai-submit-table-drill-result', payload);
+          if (data?.error) {
+            console.log('submit failed', { drillQueueId, statusCode: null, message: data.error, raw: data });
+            setError(data.error);
+            doRecovery();
+            return;
+          }
+          setLastTrainingEventId(data?.training_event_id ?? null);
+          setTableGradeResult({ isCorrect: data?.correct === true, explanation: data?.explanation ?? '' });
+          setLoading(false);
+          setPhase('graded');
+          lastAnsweredIdRef.current = drillQueueId;
+          if (sessionActive) {
+            const nextIndex = Math.min(SESSION_TARGET_COUNT, sessionIndex + 1);
+            sessionIndexRef.current = nextIndex;
+            setSessionIndex(nextIndex);
+            setSessionCorrect((p) => p + (data?.correct ? 1 : 0));
+            setSessionHistory((p) => [...p, { is_correct: data?.correct, drill_type: drillType, difficulty: currentDifficulty ?? undefined }]);
+            if (nextIndex >= SESSION_TARGET_COUNT) setTableGradeResult(null);
+          }
+          const answeredId = drillQueueId;
+          const freshDueDrills = await loadDueDrills();
+          const nextRow = freshDueDrills.find((r) => r.id !== answeredId) ?? null;
+          if (nextRow) {
+            setCurrentDrillRow(nextRow);
+            console.log('preload next row', { answeredId, nextRowId: nextRow.id, count: freshDueDrills.length });
+          } else {
+            console.log('preload no next row yet', { answeredId, count: freshDueDrills.length });
+          }
+          console.log('selectTableAction done', JSON.stringify({ ok: true, nextRowId: nextRow?.id ?? null }));
+          void softRefreshDueDrills();
+          return;
+        } catch (e2: any) {
+          const statusMatch2 = (e2?.message ?? '').match(/\s(\d{3}):/);
+          const statusCode2 = statusMatch2 ? parseInt(statusMatch2[1], 10) : null;
+          console.log('submit failed', { drillQueueId, statusCode: statusCode2, message: e2?.message ?? String(e2), raw: e2 });
+          setError(e2?.message ?? String(e2));
+          doRecovery();
+          return;
+        }
+      }
+
+      setError(message);
+      doRecovery();
+    } finally {
+      submittingRef.current = false;
+    }
   }
 
   async function closeResultModal() {
@@ -369,15 +663,17 @@ export default function TrainScreen() {
 
   const bottomPadding = 0; // Таббар уже учитывает safe area
 
+  console.log('render state', { loading, phase, scenario: !!scenario, showActionBar, tableGradeResult: !!tableGradeResult });
+
   return (
     // МЫ НЕ ИСПОЛЬЗУЕМ <ScreenWrapper>, ЧТОБЫ СБРОСИТЬ ОТСТУПЫ!
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <View style={[styles.screen, { paddingTop: insets.top }]} pointerEvents="box-none">
       
       {error && <View style={[styles.errorBar, { top: insets.top + 10 }]}><AppText style={{color: '#FFF'}}>{error}</AppText></View>}
 
       {/* ─── ВЕРХНИЙ БЛОК: СТОЛ (FLEX: 1, ЗАНИМАЕТ ВСЁ СВОБОДНОЕ МЕСТО) ───────────────────────── */}
-      <View style={styles.tableContainer}>
-        <View style={[styles.tablePill, { width: tableWidth, height: tableHeight, borderRadius: tableBorderRadius }]}>
+      <View style={styles.tableContainer} pointerEvents="box-none">
+        <View style={[styles.tablePill, { width: tableWidth, height: tableHeight, borderRadius: tableBorderRadius }]} pointerEvents="box-none">
           <View style={[styles.railOuter, { borderRadius: tableBorderRadius }, styles.absoluteFill]} />
           <View style={[styles.railInner, { borderRadius: tableBorderRadius - 12 }, styles.absoluteFill]}>
             <View style={[styles.felt, { borderRadius: tableBorderRadius - 14 }, styles.absoluteFill]}>
@@ -448,13 +744,13 @@ export default function TrainScreen() {
       {/* ─── НИЖНИЙ БЛОК: КНОПКИ (ЖЕСТКО ПРИБИТ К НИЗУ, НИКАКОГО АБСОЛЮТА) ──────── */}
       <View style={[styles.controlPanel, { paddingBottom: 8 }]}>
         
-        {!scenario && !loading && (
-           <TouchableOpacity style={styles.btnStart} onPress={startDrill} activeOpacity={0.8}>
+        {!scenario && !isGenerating && (
+           <TouchableOpacity style={styles.btnStart} onPress={startDrill} activeOpacity={0.8} disabled={isGenerating}>
               <AppText style={styles.btnStartText}>Новый Drill</AppText>
            </TouchableOpacity>
         )}
 
-        {loading && !scenario && (
+        {isGenerating && !scenario && (
           <View style={styles.loadingRow}>
             <ActivityIndicator color={THEME.BTN_CALL} size="large" />
             <AppText style={{color: '#9CA3AF', fontWeight: 'bold'}}>Раздача...</AppText>
@@ -481,9 +777,9 @@ export default function TrainScreen() {
 
             {(currentDrillType ?? scenario!.drill_type) === 'raise_sizing' ? (
                <View style={styles.gridRowSizing}>
-                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('2.5x')}><AppText style={styles.btnActionText}>2.5x</AppText></TouchableOpacity>
-                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('3x')}><AppText style={styles.btnActionText}>3x</AppText></TouchableOpacity>
-                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('overbet')}><AppText style={styles.btnActionText}>Overbet</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('2.5x')} disabled={isSubmitting}><AppText style={styles.btnActionText}>2.5x</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('3x')} disabled={isSubmitting}><AppText style={styles.btnActionText}>3x</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('overbet')} disabled={isSubmitting}><AppText style={styles.btnActionText}>Overbet</AppText></TouchableOpacity>
                </View>
             ) : (
               <View style={styles.actionGrid}>
@@ -492,7 +788,7 @@ export default function TrainScreen() {
                     style={[styles.btnAction, { backgroundColor: THEME.BTN_FOLD }]}
                     onPressIn={() => Animated.timing(foldScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
                     onPressOut={() => Animated.timing(foldScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
-                    onPress={() => selectTableAction('fold')} disabled={loading}
+                    onPress={() => selectTableAction('fold')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ transform: [{ scale: foldScale }], alignItems: 'center' }}>
                       <AppText style={styles.btnActionLabel}>FOLD</AppText>
@@ -503,7 +799,7 @@ export default function TrainScreen() {
                     style={[styles.btnAction, { backgroundColor: THEME.BTN_CALL }]}
                     onPressIn={() => Animated.timing(callScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
                     onPressOut={() => Animated.timing(callScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
-                    onPress={() => selectTableAction('call')} disabled={loading}
+                    onPress={() => selectTableAction('call')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ transform: [{ scale: callScale }], alignItems: 'center' }}>
                       <AppText style={styles.btnActionLabel}>CALL</AppText>
@@ -514,7 +810,7 @@ export default function TrainScreen() {
 
                 {/* Raise Full-width Section */}
                 <View style={styles.raiseFullContainer}>
-                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.max(2, p - 1))} disabled={loading}>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.max(2, p - 1))} disabled={isSubmitting}>
                     <AppText style={styles.raiseInlineAdjustText}>−</AppText>
                   </TouchableOpacity>
 
@@ -522,14 +818,14 @@ export default function TrainScreen() {
                     style={styles.raiseInlineCenter}
                     onPressIn={() => Animated.timing(raiseScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
                     onPressOut={() => Animated.timing(raiseScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
-                    onPress={() => selectTableAction('raise')} disabled={loading}
+                    onPress={() => selectTableAction('raise')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ alignItems: 'center', transform: [{ scale: raiseScale }] }}>
                       <AppText style={styles.btnActionLabel}>RAISE TO</AppText>
                       <AppText style={styles.btnActionSub}>{raiseSizeBb} bb</AppText>
                     </Animated.View>
                   </Pressable>
-                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => p + 1)} disabled={loading}>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => p + 1)} disabled={isSubmitting}>
                     <AppText style={styles.raiseInlineAdjustText}>+</AppText>
                   </TouchableOpacity>
                 </View>
@@ -552,7 +848,7 @@ const styles = StyleSheet.create({
 
   // 2. БЛОК СО СТОЛОМ ЗАНИМАЕТ ВСЁ ВЕРХНЕЕ ПРОСТРАНСТВО
   tableContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%', paddingTop: 24 }, 
-  tablePill: { position: 'relative', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.8, shadowRadius: 30, elevation: 20 },
+  tablePill: { position: 'relative', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.8, shadowRadius: 30, elevation: 20, marginBottom: 40 },
   
   railOuter: { backgroundColor: THEME.RAIL_OUTER, borderWidth: 4, borderColor: '#000' },
   railInner: { margin: 12, backgroundColor: THEME.RAIL_INNER, borderWidth: 2, borderColor: '#3A3F58', overflow: 'hidden' },
@@ -615,7 +911,7 @@ const styles = StyleSheet.create({
   villainBetText: { color: '#FFF', fontWeight: '900', fontSize: 13 },
 
   // 3. БЛОК КНОПОК ПРИБИТ К НИЗУ (ОБЫЧНЫЙ FLEX БЛОК)
-  controlPanel: { width: '100%', backgroundColor: THEME.PANEL_BG, paddingTop: 12, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: '#1F2233' },
+  controlPanel: { width: '100%', backgroundColor: THEME.PANEL_BG, paddingTop: 16, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: '#1F2233', zIndex: 999, elevation: 999 },
   loadingRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 12, paddingVertical: 30 },
   
   btnStart: { backgroundColor: THEME.BTN_CALL, height: 54, borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },

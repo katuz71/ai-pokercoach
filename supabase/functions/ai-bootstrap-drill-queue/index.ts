@@ -1,4 +1,5 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 import { corsHeaders } from '../_shared/cors.ts';
 import { enforceAllowedLeakTag } from '../_shared/leaks.ts';
 import { requireUserClient, AuthError } from '../_shared/userAuth.ts';
@@ -6,6 +7,15 @@ import { requireUserClient, AuthError } from '../_shared/userAuth.ts';
 const TARGET_COUNT = 10;
 const FOCUS_SHARE = 0.7; // 70% for weekly focus
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** Fallback when leaks array is empty — at least 10 rows in drill_queue */
+const FALLBACK_LEAKS = [
+  'preflop_opening',
+  'flop_cbet',
+  'turn_barreling',
+  'river_betting_strategy',
+  'defense_vs_cbet',
+];
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const MIX_THRESHOLD = 0.1; // 10% difference to switch to sizingHeavy/actionHeavy
 const MIN_ATTEMPTS_FOR_MIX = 10;
@@ -231,6 +241,17 @@ function buildFocusDrillTypes(mix: FocusMix): string[] {
   return a;
 }
 
+type BootstrapResponse = {
+  ok: boolean;
+  user_id: string;
+  existing_before: number;
+  inserted_count: number;
+  used_fallback_seed: boolean;
+  sample: Array<{ id: string; status: string; due_at: string; leak_tag: string }>;
+  error?: string;
+  reason?: string;
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -240,147 +261,10 @@ serve(async (req) => {
     return json({ error: 'Method not allowed', detail: 'Use POST' }, 405);
   }
 
+  let userId: string;
   try {
-    const { userId, supabaseUser } = await requireUserClient(req);
-
-    const { count: activeCount, error: countError } = await supabaseUser
-      .from('drill_queue')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .in('status', ['due', 'scheduled']);
-
-    if (countError) {
-      return json({ error: 'db_error', detail: countError.message }, 500);
-    }
-
-    const hasActive = (activeCount ?? 0) > 0;
-    if (hasActive) {
-      const payload = {
-        ok: true,
-        focus_leak_tag: 'fundamentals',
-        created: 0,
-        breakdown: { focus: 0, other: 0 },
-        focus_mix: {
-          mode: 'insufficientData' as const,
-          pct_sizing_used: 0.5,
-          focus_raise_sizing: 0,
-          focus_action_decision: 0,
-          total_mistakes: 0,
-          sizing_mistakes: 0,
-          sizing_reason_share: 0,
-        },
-      };
-      console.log(
-        JSON.stringify({
-          user_id: userId,
-          focus_leak_tag: payload.focus_leak_tag,
-          created: 0,
-          breakdown: payload.breakdown,
-        })
-      );
-      return json(payload);
-    }
-
-    let skillRows: SkillRatingRow[] = [];
-    const { data: skillData, error: skillError } = await supabaseUser
-      .from('skill_ratings')
-      .select('leak_tag, rating, attempts_7d, correct_7d, last_practice_at')
-      .eq('user_id', userId);
-
-    if (skillError) {
-      console.error('skill_ratings fetch failed, using fundamentals:', skillError.message);
-    } else if (skillData && Array.isArray(skillData)) {
-      skillRows = skillData as SkillRatingRow[];
-    }
-
-    const focusLeakTag = computeWeeklyFocus(skillRows);
-    const otherTag = computeOtherTag(skillRows, focusLeakTag);
-
-    const focusCount = Math.floor(TARGET_COUNT * FOCUS_SHARE);
-    const otherCount = TARGET_COUNT - focusCount;
-    const now = new Date().toISOString();
-
-    const mix = await getFocusMix(supabaseUser, userId, focusLeakTag, focusCount);
-    const focusDrillTypes = buildFocusDrillTypes(mix);
-
-    const rows: Array<{
-      user_id: string;
-      leak_tag: string;
-      status: string;
-      due_at: string;
-      repetition: number;
-      last_score: number | null;
-      last_drill_id: null;
-      drill_type: string;
-    }> = [];
-    for (let f = 0; f < focusCount; f++) {
-      rows.push({
-        user_id: userId,
-        leak_tag: focusLeakTag,
-        status: 'due',
-        due_at: now,
-        repetition: 0,
-        last_score: null,
-        last_drill_id: null,
-        drill_type: focusDrillTypes[f],
-      });
-    }
-    for (let o = 0; o < otherCount; o++) {
-      rows.push({
-        user_id: userId,
-        leak_tag: otherTag,
-        status: 'due',
-        due_at: now,
-        repetition: 0,
-        last_score: null,
-        last_drill_id: null,
-        drill_type: o % 2 === 0 ? 'action_decision' : 'raise_sizing',
-      });
-    }
-
-    const { error: insertError } = await supabaseUser.from('drill_queue').insert(rows);
-
-    if (insertError) {
-      return json({ error: 'db_error', detail: insertError.message }, 500);
-    }
-
-    const breakdown = { focus: focusCount, other: otherCount };
-    const focus_mix = {
-      mode: mix.mode,
-      pct_sizing_used: mix.pct_sizing_used,
-      focus_raise_sizing: mix.focus_raise_sizing,
-      focus_action_decision: mix.focus_action_decision,
-      attempts_action: mix.attempts_action,
-      attempts_sizing: mix.attempts_sizing,
-      mistakeRateAction: mix.mistakeRateAction,
-      mistakeRateSizing: mix.mistakeRateSizing,
-      total_mistakes: mix.total_mistakes,
-      sizing_mistakes: mix.sizing_mistakes,
-      sizing_reason_share: mix.sizing_reason_share,
-    };
-    const payload = {
-      ok: true,
-      focus_leak_tag: focusLeakTag,
-      created: rows.length,
-      breakdown,
-      focus_mix,
-    };
-    console.log(
-      JSON.stringify({
-        user_id: userId,
-        focusLeakTag,
-        mix_mode: mix.mode,
-        attempts_action: mix.attempts_action,
-        attempts_sizing: mix.attempts_sizing,
-        mistakeRateAction: mix.mistakeRateAction,
-        mistakeRateSizing: mix.mistakeRateSizing,
-        total_mistakes: mix.total_mistakes,
-        sizing_mistakes: mix.sizing_mistakes,
-        sizing_reason_share: mix.sizing_reason_share,
-        pct_sizing_used: mix.pct_sizing_used,
-      })
-    );
-    return json(payload);
+    const auth = await requireUserClient(req);
+    userId = auth.userId;
   } catch (e) {
     if (e instanceof AuthError) {
       return json({ error: e.body?.error ?? 'auth_error', detail: e.body?.detail }, e.status);
@@ -388,4 +272,157 @@ serve(async (req) => {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return json({ error: 'server_error', detail: msg }, 500);
   }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error('bootstrap failed', { user_id: userId, error: 'missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' });
+    const res: BootstrapResponse = {
+      ok: false,
+      user_id: userId,
+      existing_before: 0,
+      inserted_count: 0,
+      used_fallback_seed: false,
+      sample: [],
+      error: 'missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY',
+      reason: 'env',
+    };
+    return json(res, 500);
+  }
+
+  const supabaseService = createClient(supabaseUrl, serviceRoleKey);
+
+  // Table: drill_queue, column: user_id (confirmed in migrations)
+  const { count: activeCount, error: countError } = await supabaseService
+    .from('drill_queue')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .in('status', ['due', 'scheduled']);
+
+  if (countError) {
+    console.error('bootstrap failed', { user_id: userId, error: countError.message });
+    const res: BootstrapResponse = {
+      ok: false,
+      user_id: userId,
+      existing_before: 0,
+      inserted_count: 0,
+      used_fallback_seed: false,
+      sample: [],
+      error: String(countError.message),
+      reason: 'count',
+    };
+    return json(res, 500);
+  }
+
+  const existingBefore = activeCount ?? 0;
+  if (existingBefore > 0) {
+    const res: BootstrapResponse = {
+      ok: true,
+      user_id: userId,
+      existing_before: existingBefore,
+      inserted_count: 0,
+      used_fallback_seed: false,
+      sample: [],
+    };
+    return json(res);
+  }
+
+  // Determine leaks: from skill_ratings or fallback
+  let skillRows: SkillRatingRow[] = [];
+  const { data: skillData, error: skillError } = await supabaseService
+    .from('skill_ratings')
+    .select('leak_tag, rating, attempts_7d, correct_7d, last_practice_at')
+    .eq('user_id', userId);
+
+  if (!skillError && skillData && Array.isArray(skillData)) {
+    skillRows = skillData as SkillRatingRow[];
+  }
+
+  const focusLeakTag = computeWeeklyFocus(skillRows);
+  const otherTag = computeOtherTag(skillRows, focusLeakTag);
+  const focusCount = Math.floor(TARGET_COUNT * FOCUS_SHARE);
+  const otherCount = TARGET_COUNT - focusCount;
+
+  let used_fallback_seed: boolean;
+  let leakTags: string[];
+
+  if (!skillRows || skillRows.length === 0) {
+    used_fallback_seed = true;
+    leakTags = FALLBACK_LEAKS;
+  } else {
+    used_fallback_seed = false;
+    leakTags = [];
+    for (let i = 0; i < focusCount; i++) leakTags.push(focusLeakTag);
+    for (let i = 0; i < otherCount; i++) leakTags.push(otherTag);
+  }
+
+  const dueAt = new Date().toISOString();
+  const rows = Array.from({ length: TARGET_COUNT }, (_, i) => ({
+    user_id: userId,
+    status: 'due',
+    due_at: dueAt,
+    leak_tag: leakTags[i % leakTags.length],
+    drill_type: 'action_decision' as const,
+    repetition: 0,
+    last_score: null as number | null,
+    last_drill_id: null as null,
+  }));
+
+  const { error: insertError } = await supabaseService
+    .from('drill_queue')
+    .insert(rows);
+
+  if (insertError) {
+    console.error('bootstrap failed', { user_id: userId, error: insertError.message });
+    const res: BootstrapResponse = {
+      ok: false,
+      user_id: userId,
+      existing_before: existingBefore,
+      inserted_count: 0,
+      used_fallback_seed,
+      sample: [],
+      error: String(insertError.message),
+      reason: 'insert',
+    };
+    return json(res, 500);
+  }
+
+  const { data: sampleRows, error: selectError } = await supabaseService
+    .from('drill_queue')
+    .select('id, status, due_at, leak_tag')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(5);
+
+  if (selectError) {
+    console.error('bootstrap failed', { user_id: userId, error: selectError.message });
+    const res: BootstrapResponse = {
+      ok: false,
+      user_id: userId,
+      existing_before: existingBefore,
+      inserted_count: rows.length,
+      used_fallback_seed,
+      sample: [],
+      error: String(selectError.message),
+      reason: 'select_after_insert',
+    };
+    return json(res, 500);
+  }
+
+  const sample = (sampleRows ?? []).map((r: { id: string; status: string; due_at: string; leak_tag: string }) => ({
+    id: r.id,
+    status: r.status,
+    due_at: r.due_at,
+    leak_tag: r.leak_tag,
+  }));
+
+  const res: BootstrapResponse = {
+    ok: true,
+    user_id: userId,
+    existing_before: existingBefore,
+    inserted_count: rows.length,
+    used_fallback_seed,
+    sample,
+  };
+  return json(res);
 });

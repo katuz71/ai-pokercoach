@@ -16,6 +16,11 @@ export const ALLOWED_LEAK_TAGS = new Set([
   'bluff_catching',
   'sizing_mistakes',
   'fundamentals',
+  // Starter leaks for bootstrap when user has no skill_ratings
+  'preflop_opening',
+  'flop_cbet',
+  'turn_barreling',
+  'defense_vs_cbet',
 ]);
 
 /**

@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CoachStyle } from '../../context/AppContext';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
@@ -37,6 +38,7 @@ const labelByStyle: Record<CoachStyle, string> = {
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -151,7 +153,7 @@ export default function ProfileScreen() {
         .from('training_events')
         .select('mistake_reason')
         .eq('user_id', user.id)
-        .eq('is_correct', false)
+        .not('mistake_reason', 'is', null)
         .gte('created_at', sevenDaysAgo);
 
       if (error) throw error;
@@ -448,10 +450,32 @@ export default function ProfileScreen() {
   }
 
   return (
-    <ScreenWrapper>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+    <ScreenWrapper edges={['top', 'left', 'right']}>
+      <ScrollView
+        style={[styles.scrollView, { marginBottom: -insets.bottom }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
+      >
         <View style={styles.container}>
           <AppText variant="h2">Profile</AppText>
+
+          {/* AI Coach Banner — entry point to chat with coach */}
+          <Card style={styles.coachBanner}>
+            <AppText variant="h3" style={styles.coachBannerTitle}>
+              🤖 Персональный ИИ-Тренер
+            </AppText>
+            <AppText variant="body" style={styles.coachBannerDescription}>
+              Задай любой вопрос по стратегии, конкретной раздаче или покерной психологии. Тренер учитывает историю твоих ликов.
+            </AppText>
+            <TouchableOpacity
+              onPress={() => router.push('/coach/threads')}
+              style={styles.coachBannerButton}
+              activeOpacity={0.8}
+            >
+              <AppText variant="label" color="#FFFFFF" style={styles.coachBannerButtonText}>
+                Начать диалог
+              </AppText>
+            </TouchableOpacity>
+          </Card>
 
           {/* Daily Check-in Section */}
           <Card style={styles.checkinSection}>
@@ -595,20 +619,6 @@ export default function ProfileScreen() {
               </AppText>
             </TouchableOpacity>
           </Card>
-
-          {/* Coach Chat */}
-          <TouchableOpacity
-            onPress={() => router.push('/coach/chat')}
-            style={styles.coachChatCard}
-          >
-            <View style={styles.coachChatContent}>
-              <AppText variant="h3" style={styles.coachChatTitle}>Coach Chat</AppText>
-              <AppText variant="body" style={styles.coachChatDescription}>
-                Задай вопрос тренеру
-              </AppText>
-            </View>
-            <AppText variant="h2" color="#4C9AFF">→</AppText>
-          </TouchableOpacity>
 
           <Card style={styles.section}>
             <AppText variant="h3" style={styles.sectionTitle}>Player Info</AppText>
@@ -844,7 +854,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 40,
+    paddingBottom: 16,
   },
   container: {
     flex: 1,
@@ -1231,25 +1241,31 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     marginTop: 8,
   },
-  coachChatCard: {
-    backgroundColor: '#11161F',
-    borderColor: 'rgba(76, 154, 255, 0.3)',
-    borderWidth: 1,
-    borderRadius: 16,
+  coachBanner: {
     padding: 20,
-    flexDirection: 'row',
+    gap: 12,
+    backgroundColor: 'rgba(76, 154, 255, 0.08)',
+    borderColor: '#4C9AFF',
+    borderWidth: 2,
+    borderRadius: 16,
+  },
+  coachBannerTitle: {
+    marginBottom: 4,
+  },
+  coachBannerDescription: {
+    color: '#E8ECF4',
+    lineHeight: 22,
+    opacity: 0.95,
+  },
+  coachBannerButton: {
+    backgroundColor: '#4C9AFF',
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: 'center',
-    justifyContent: 'space-between',
+    marginTop: 8,
   },
-  coachChatContent: {
-    flex: 1,
-    gap: 4,
-  },
-  coachChatTitle: {
-    fontSize: 18,
-  },
-  coachChatDescription: {
-    fontSize: 14,
-    opacity: 0.7,
+  coachBannerButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

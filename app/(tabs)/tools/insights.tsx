@@ -1,195 +1,117 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Pressable,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { ScreenWrapper } from '../../../components/ScreenWrapper';
 import { AppText } from '../../../components/AppText';
 import { Card } from '../../../components/Card';
 import { supabase } from '../../../lib/supabase';
-import { useAuth } from '../../../providers/AuthProvider';
-import { getLeakDisplay } from '../../../lib/leakCatalog';
 
-const MISTAKE_REASON_KEYS = ['range', 'sizing', 'position', 'board', 'stack', 'unknown'] as const;
-type MistakeReasonKey = (typeof MISTAKE_REASON_KEYS)[number];
+// ─── Types ─────────────────────────────────────────────────────────────────
 
-function normalizeReason(r: string | null | undefined): MistakeReasonKey {
-  if (!r || !r.trim()) return 'unknown';
-  const lower = r.trim().toLowerCase();
-  return MISTAKE_REASON_KEYS.includes(lower as MistakeReasonKey) ? (lower as MistakeReasonKey) : 'unknown';
+interface SkillRating {
+  leak_tag: string;
+  rating: number;
+  total_attempts: number;
+  [key: string]: unknown;
 }
 
-function reasonLabel(key: MistakeReasonKey): string {
-  return key.charAt(0).toUpperCase() + key.slice(1);
+interface TopLeak {
+  tag: string;
+  severity?: string;
+  description?: string;
+  explanation?: string;
+  [key: string]: unknown;
 }
 
-type MistakeReasonRow = { reason: MistakeReasonKey; count: number; percent: number };
-type LeakRow = { leak_tag: string; count: number; pctOfTop: number };
-
-/** Per-leak counts by reason; used to show top-2 reasons under each leak row. */
-type LeakReasonsBreakdown = Record<string, Record<MistakeReasonKey, number>>;
-
-function getTopTwoReasons(
-  counts: Record<MistakeReasonKey, number>
-): Array<{ reason: MistakeReasonKey; count: number }> {
-  return (MISTAKE_REASON_KEYS as readonly MistakeReasonKey[])
-    .filter((k) => counts[k] > 0)
-    .map((reason) => ({ reason, count: counts[reason] }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 2);
+interface LeakSummaryRow {
+  id: string;
+  summary: {
+    top_leaks?: TopLeak[];
+    improvement_plan?: string[];
+  };
+  created_at: string;
 }
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function formatLeakTag(tag: string): string {
+  return tag
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getSeverityColor(severity: string | undefined): string {
+  if (!severity) return '#4C9AFF';
+  const s = severity.toUpperCase();
+  if (s === 'HIGH') return '#EF4444';
+  if (s === 'MEDIUM') return '#F59E0B';
+  return '#4C9AFF';
+}
+
+// ─── Screen ───────────────────────────────────────────────────────────────
 
 export default function InsightsScreen() {
   const router = useRouter();
-  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mistakeReasons, setMistakeReasons] = useState<MistakeReasonRow[]>([]);
-  const [topLeaks, setTopLeaks] = useState<LeakRow[]>([]);
-  const [leakReasonsBreakdown, setLeakReasonsBreakdown] = useState<LeakReasonsBreakdown | null>(null);
-  const [breakdownLoading, setBreakdownLoading] = useState(false);
+  const [skillRatings, setSkillRatings] = useState<SkillRating[]>([]);
+  const [latestSummary, setLatestSummary] = useState<LeakSummaryRow | null>(null);
 
-  const load = useCallback(async () => {
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
-
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
     try {
-      // Block A: mistakes last 7 days — select only mistake_reason
-      const { data: mistakesData, error: mistakesErr } = await supabase
-        .from('training_events')
-        .select('mistake_reason')
-        .eq('user_id', user.id)
-        .eq('is_correct', false)
-        .gte('created_at', sevenDaysAgo);
+      const [ratingsRes, summaryRes] = await Promise.all([
+        supabase
+          .from('skill_ratings')
+          .select('*')
+          .order('rating', { ascending: false }),
+        supabase
+          .from('leak_summaries')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
 
-      if (mistakesErr) throw mistakesErr;
+      if (ratingsRes.error) throw new Error(ratingsRes.error.message);
+      if (summaryRes.error) throw new Error(summaryRes.error.message);
 
-      const reasonCounts: Record<MistakeReasonKey, number> = {
-        range: 0,
-        sizing: 0,
-        position: 0,
-        board: 0,
-        stack: 0,
-        unknown: 0,
-      };
-      (mistakesData ?? []).forEach((row: { mistake_reason: string | null }) => {
-        const key = normalizeReason(row.mistake_reason);
-        reasonCounts[key] += 1;
-      });
-      const totalMistakes = Object.values(reasonCounts).reduce((a, b) => a + b, 0);
-      const reasonRows: MistakeReasonRow[] = MISTAKE_REASON_KEYS.filter((k) => reasonCounts[k] > 0).map(
-        (reason) => ({
-          reason,
-          count: reasonCounts[reason],
-          percent: totalMistakes > 0 ? (reasonCounts[reason] / totalMistakes) * 100 : 0,
-        })
-      );
-      setMistakeReasons(reasonRows);
-
-      // Block B: top leaks last 30 days — select only leak_tag
-      const { data: leaksData, error: leaksErr } = await supabase
-        .from('training_events')
-        .select('leak_tag')
-        .eq('user_id', user.id)
-        .eq('is_correct', false)
-        .gte('created_at', thirtyDaysAgo);
-
-      if (leaksErr) throw leaksErr;
-
-      const leakCounts: Record<string, number> = {};
-      (leaksData ?? []).forEach((row: { leak_tag: string | null }) => {
-        const tag = row.leak_tag?.trim();
-        if (!tag) return;
-        leakCounts[tag] = (leakCounts[tag] ?? 0) + 1;
-      });
-      const sorted = Object.entries(leakCounts)
-        .map(([leak_tag, count]) => ({ leak_tag, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-      const top1 = sorted[0]?.count ?? 1;
-      const leakRows: LeakRow[] = sorted.map(({ leak_tag, count }) => ({
-        leak_tag,
-        count,
-        pctOfTop: (count / top1) * 100,
-      }));
-      setTopLeaks(leakRows);
-
-      // One extra request: breakdown of mistake_reason per top-5 leak (30 days)
-      if (leakRows.length > 0) {
-        setBreakdownLoading(true);
-        setLeakReasonsBreakdown(null);
-        try {
-          const topTags = leakRows.map((r) => r.leak_tag);
-          const { data: breakdownData, error: breakdownErr } = await supabase
-            .from('training_events')
-            .select('leak_tag, mistake_reason')
-            .eq('user_id', user.id)
-            .eq('is_correct', false)
-            .gte('created_at', thirtyDaysAgo)
-            .in('leak_tag', topTags);
-
-          if (!breakdownErr && breakdownData) {
-            const breakdown: LeakReasonsBreakdown = {};
-            (breakdownData as { leak_tag: string | null; mistake_reason: string | null }[]).forEach((row) => {
-              const tag = row.leak_tag?.trim();
-              if (!tag) return;
-              if (!breakdown[tag]) {
-                breakdown[tag] = { range: 0, sizing: 0, position: 0, board: 0, stack: 0, unknown: 0 };
-              }
-              const key = normalizeReason(row.mistake_reason);
-              breakdown[tag][key] += 1;
-            });
-            setLeakReasonsBreakdown(breakdown);
-          } else {
-            setLeakReasonsBreakdown({});
-          }
-        } catch (_e) {
-          setLeakReasonsBreakdown({});
-        } finally {
-          setBreakdownLoading(false);
-        }
-      } else {
-        setLeakReasonsBreakdown({});
-      }
+      setSkillRatings(ratingsRes.data ?? []);
+      setLatestSummary(summaryRes.data ?? null);
     } catch (e) {
-      console.error('Insights load failed:', e);
-      setError(e instanceof Error ? e.message : 'Failed to load insights');
-      setMistakeReasons([]);
-      setTopLeaks([]);
-      setLeakReasonsBreakdown(null);
-      setBreakdownLoading(false);
+      setError(e instanceof Error ? e.message : 'Не удалось загрузить данные');
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
 
-  if (!user) {
+  if (loading) {
     return (
       <ScreenWrapper>
-        <View style={styles.centered}>
-          <AppText variant="body" color="#65708A">Sign in to see insights.</AppText>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#4C9AFF" />
+          <AppText variant="body" color="#A7B0C0" style={styles.loadingText}>
+            Загрузка аналитики…
+          </AppText>
         </View>
       </ScreenWrapper>
     );
   }
+
+  const topLeaks = latestSummary?.summary?.top_leaks ?? [];
 
   return (
     <ScreenWrapper>
@@ -200,120 +122,115 @@ export default function InsightsScreen() {
       >
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backRow}>
-            <AppText variant="body" color="#4C9AFF">← Back</AppText>
+            <AppText variant="body" color="#4C9AFF">← Назад</AppText>
           </TouchableOpacity>
-          <AppText variant="caption" color="#A7B0C0">Tools</AppText>
-          <AppText variant="h1" style={styles.title}>Insights</AppText>
+          <AppText variant="h1" style={styles.title}>AI Insights</AppText>
         </View>
 
-        {loading && (
-          <View style={styles.loadingBlock}>
-            <ActivityIndicator color="#FFFFFF" size="small" />
-            <AppText variant="caption" color="#65708A" style={styles.loadingText}>Loading…</AppText>
-          </View>
-        )}
-
-        {error && (
+        {error ? (
           <Card style={styles.errorCard}>
-            <AppText variant="body" color="#E53935">{error}</AppText>
-            <TouchableOpacity style={styles.retryButton} onPress={load}>
-              <AppText variant="label" color="#4C9AFF">Retry</AppText>
-            </TouchableOpacity>
+            <AppText variant="body" color="#EF4444">{error}</AppText>
           </Card>
-        )}
+        ) : null}
 
-        {!loading && !error && (
-          <>
-            {/* Block A: Mistake reasons (7 days) */}
-            <Card style={styles.blockCard}>
-              <AppText variant="h3" style={styles.blockTitle}>Mistake reasons (7 days)</AppText>
-              {mistakeReasons.length === 0 ? (
-                <AppText variant="body" color="#65708A">No mistakes in last 7 days.</AppText>
-              ) : (
-                <>
-                  {mistakeReasons.map(({ reason, count, percent }) => (
-                    <View key={reason} style={styles.reasonRow}>
-                      <View style={styles.reasonBarBg}>
-                        <View
-                          style={[styles.reasonBarFill, { width: `${percent}%` }]}
-                        />
-                      </View>
-                      <View style={styles.reasonMeta}>
-                        <AppText variant="body" color="#FFFFFF">
-                          {reasonLabel(reason)}
-                        </AppText>
-                        <AppText variant="caption" color="#A7B0C0">
-                          {count} ({percent.toFixed(0)}%)
-                        </AppText>
-                      </View>
+        {/* Section 1: Skill Ratings */}
+        <View style={styles.section}>
+          <AppText variant="h2" style={styles.sectionTitle}>Твои навыки</AppText>
+          {skillRatings.length === 0 ? (
+            <Card style={styles.emptyCard}>
+              <AppText variant="body" color="#A7B0C0" style={styles.emptyText}>
+                Пройди больше тренировок (Drills), чтобы ИИ оценил твои навыки.
+              </AppText>
+            </Card>
+          ) : (
+            <View style={styles.skillList}>
+              {skillRatings.map((item) => (
+                <Card key={item.leak_tag} style={styles.skillCard}>
+                  <AppText variant="h3" style={styles.skillTag}>
+                    {formatLeakTag(item.leak_tag)}
+                  </AppText>
+                  <AppText variant="body" color="#A7B0C0" style={styles.skillMeta}>
+                    Rating: {item.rating}/100 (Тренировок: {item.total_attempts ?? 0})
+                  </AppText>
+                  <View style={styles.progressTrack}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        { width: `${Math.min(100, Math.max(0, item.rating))}%` },
+                      ]}
+                    />
+                  </View>
+                </Card>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {/* Section 2: Top Leaks */}
+        <View style={styles.section}>
+          <AppText variant="h2" style={styles.sectionTitle}>Топ ошибки</AppText>
+          {topLeaks.length === 0 ? (
+            <Card style={styles.emptyCard}>
+              <AppText variant="body" color="#A7B0C0" style={styles.emptyText}>
+                Проанализируй больше раздач, чтобы ИИ нашёл твои лики.
+              </AppText>
+            </Card>
+          ) : (
+            <View style={styles.leakList}>
+              {topLeaks.map((leak, index) => {
+                const severity = leak.severity ?? '';
+                const description = leak.description ?? leak.explanation ?? '';
+                const badgeColor = getSeverityColor(severity);
+                return (
+                  <Card key={`${leak.tag}-${index}`} style={styles.leakCard}>
+                    <View style={styles.leakHeader}>
+                      <AppText variant="h3" style={styles.leakTag}>
+                        {formatLeakTag(leak.tag)}
+                      </AppText>
+                      {severity ? (
+                        <View style={[styles.severityBadge, { backgroundColor: badgeColor }]}>
+                          <AppText variant="label" style={styles.severityText}>
+                            {severity.toUpperCase()}
+                          </AppText>
+                        </View>
+                      ) : null}
                     </View>
-                  ))}
-                </>
-              )}
-            </Card>
-
-            {/* Block B: Top leaks by mistakes (30 days) */}
-            <Card style={styles.blockCard}>
-              <AppText variant="h3" style={styles.blockTitle}>Top leaks by mistakes (30 days)</AppText>
-              {breakdownLoading && (
-                <AppText variant="caption" color="#65708A" style={styles.loadingReasonsText}>
-                  Loading reasons…
-                </AppText>
-              )}
-              {topLeaks.length === 0 ? (
-                <AppText variant="body" color="#65708A">No mistakes with leak tag in last 30 days.</AppText>
-              ) : (
-                topLeaks.map(({ leak_tag, count, pctOfTop }) => {
-                  const breakdown = leakReasonsBreakdown?.[leak_tag];
-                  const topTwo = breakdown ? getTopTwoReasons(breakdown) : [];
-                  const showReasons = topTwo.length > 0;
-                  return (
-                    <Pressable
-                      key={leak_tag}
-                      style={styles.leakRow}
-                      onPress={() =>
-                        router.push({
-                          pathname: '/(tabs)/train',
-                          params: { startSessionLeakTag: leak_tag },
-                        })
-                      }
-                    >
-                      <View style={styles.leakBarBg}>
-                        <View style={[styles.leakBarFill, { width: `${pctOfTop}%` }]} />
-                      </View>
-                      <View style={styles.leakMeta}>
-                        <AppText variant="body" color="#FFFFFF" numberOfLines={1}>
-                          {getLeakDisplay(leak_tag).title}
-                        </AppText>
-                        <AppText variant="caption" color="#A7B0C0">{count}</AppText>
-                      </View>
-                      {!breakdownLoading && showReasons && (
-                        <AppText variant="caption" color="#65708A" style={styles.topReasonsLine}>
-                          Top reasons: {topTwo.map(({ reason, count: c }) => `${reasonLabel(reason)} ${c}`).join(' · ')}
-                        </AppText>
-                      )}
-                    </Pressable>
-                  );
-                })
-              )}
-            </Card>
-          </>
-        )}
+                    {description ? (
+                      <AppText variant="body" color="#A7B0C0" style={styles.leakDescription}>
+                        {description}
+                      </AppText>
+                    ) : null}
+                  </Card>
+                );
+              })}
+            </View>
+          )}
+        </View>
       </ScrollView>
     </ScreenWrapper>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  scrollView: { flex: 1 },
-  scrollContent: { paddingBottom: 40 },
-  centered: {
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 40,
+  },
+  loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 16,
+  },
+  loadingText: {
+    marginTop: 8,
   },
   header: {
-    marginBottom: 20,
+    marginBottom: 24,
     gap: 4,
   },
   backRow: {
@@ -323,81 +240,93 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 32,
   },
-  loadingBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 24,
-  },
-  loadingText: {
-    marginLeft: 4,
-  },
   errorCard: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+    marginBottom: 24,
     padding: 16,
-    backgroundColor: 'rgba(229, 57, 53, 0.08)',
-    borderColor: 'rgba(229, 57, 53, 0.3)',
-    marginBottom: 16,
+    borderRadius: 12,
   },
-  retryButton: {
-    marginTop: 12,
-    alignSelf: 'flex-start',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+  section: {
+    marginBottom: 28,
   },
-  blockCard: {
-    padding: 20,
-    marginBottom: 16,
-  },
-  blockTitle: {
-    fontSize: 18,
-    marginBottom: 16,
-  },
-  loadingReasonsText: {
-    fontSize: 12,
-    marginBottom: 8,
-  },
-  reasonRow: {
+  sectionTitle: {
+    fontSize: 24,
     marginBottom: 12,
+    color: '#FFFFFF',
   },
-  reasonBarBg: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  emptyCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 20,
+    borderRadius: 12,
+  },
+  emptyText: {
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  skillList: {
+    gap: 12,
+  },
+  skillCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+  skillTag: {
+    color: '#FFFFFF',
+    fontSize: 18,
+  },
+  skillMeta: {
+    fontSize: 14,
+  },
+  progressTrack: {
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 4,
     overflow: 'hidden',
-    marginBottom: 4,
   },
-  reasonBarFill: {
+  progressFill: {
     height: '100%',
     backgroundColor: '#4C9AFF',
-    borderRadius: 3,
+    borderRadius: 4,
   },
-  reasonMeta: {
+  leakList: {
+    gap: 12,
+  },
+  leakCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    padding: 16,
+    borderRadius: 12,
+    gap: 8,
+  },
+  leakHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  leakRow: {
-    marginBottom: 12,
-  },
-  leakBarBg: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  leakBarFill: {
-    height: '100%',
-    backgroundColor: 'rgba(76, 154, 255, 0.6)',
-    borderRadius: 2,
-  },
-  leakMeta: {
-    flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
   },
-  topReasonsLine: {
-    marginTop: 4,
-    fontSize: 12,
+  leakTag: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    flex: 1,
+  },
+  severityBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  severityText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  leakDescription: {
+    fontSize: 15,
+    lineHeight: 22,
   },
 });

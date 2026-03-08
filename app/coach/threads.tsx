@@ -64,7 +64,7 @@ export default function CoachThreadsScreen() {
     try {
       let q = supabase
         .from('chat_threads')
-        .select('id, title, updated_at, leak_tag')
+        .select('*')
         .eq('user_id', user.id)
         .order('updated_at', { ascending: false })
         .limit(20);
@@ -124,7 +124,7 @@ export default function CoachThreadsScreen() {
         <View style={styles.rowContent}>
           <View style={styles.rowTitleRow}>
             <AppText variant="body" style={styles.rowTitle} numberOfLines={1} ellipsizeMode="tail">
-              {(item.title != null && String(item.title).trim() !== '') ? String(item.title).trim() : 'Chat'}
+              {(item.title != null && String(item.title).trim() !== '') ? String(item.title).trim() : 'Новый диалог'}
             </AppText>
             {item.leak_tag != null && item.leak_tag !== '' && (
               <View style={styles.leakBadge}>
@@ -152,10 +152,10 @@ export default function CoachThreadsScreen() {
           </AppText>
         </TouchableOpacity>
         <AppText variant="h2" style={styles.title}>
-          Chats
+          Мои диалоги
         </AppText>
-        <TouchableOpacity onPress={openNewThreadModal} style={styles.newThreadButton}>
-          <AppText variant="label" color="#4C9AFF">New thread</AppText>
+        <TouchableOpacity onPress={() => router.push('/coach/chat')} style={styles.newThreadButton}>
+          <AppText variant="label" color="#4C9AFF">Новый вопрос</AppText>
         </TouchableOpacity>
       </View>
 
@@ -166,7 +166,7 @@ export default function CoachThreadsScreen() {
             onPress={() => setFilterLeak(FILTER_ALL)}
           >
             <AppText variant="caption" style={filterLeak === FILTER_ALL ? styles.filterChipTextActive : styles.filterChipText}>
-              All
+              Все
             </AppText>
           </TouchableOpacity>
           {LEAK_TAGS.map((tag) => {
@@ -196,11 +196,11 @@ export default function CoachThreadsScreen() {
       ) : threads.length === 0 ? (
         <View style={styles.empty}>
           <AppText variant="body" style={styles.emptyText}>
-            No chats yet
+            Пока нет диалогов
           </AppText>
-          <TouchableOpacity onPress={openNewThreadModal} style={styles.startButton}>
+          <TouchableOpacity onPress={() => router.push('/coach/chat')} style={styles.startButton}>
             <AppText variant="label" color="#FFFFFF" style={styles.startButtonText}>
-              New thread
+              Новый вопрос
             </AppText>
           </TouchableOpacity>
         </View>
@@ -209,24 +209,37 @@ export default function CoachThreadsScreen() {
           data={threads}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[styles.list, { paddingBottom: 80 }]}
           showsVerticalScrollIndicator={false}
         />
       )}
+
+      {/* Bottom: New question — always visible */}
+      <View style={styles.bottomBar}>
+        <TouchableOpacity
+          onPress={() => router.push('/coach/chat')}
+          style={styles.newQuestionButton}
+          activeOpacity={0.85}
+        >
+          <AppText variant="label" color="#FFFFFF" style={styles.newQuestionButtonText}>
+            + Новый вопрос
+          </AppText>
+        </TouchableOpacity>
+      </View>
 
       <Modal visible={newThreadModalVisible} transparent animationType="fade">
         <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={closeNewThreadModal}>
           <View style={styles.modalContent}>
             <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()}>
-              <AppText variant="h3" style={styles.modalTitle}>New thread</AppText>
-              <AppText variant="caption" style={styles.modalSubtitle}>Choose leak focus (optional)</AppText>
+              <AppText variant="h3" style={styles.modalTitle}>Новый диалог</AppText>
+              <AppText variant="caption" style={styles.modalSubtitle}>Выбери фокус по лику (необязательно)</AppText>
               <ScrollView style={styles.modalList} keyboardShouldPersistTaps="handled">
                 <TouchableOpacity
                   style={styles.modalRow}
                   onPress={() => createThreadWithLeak(null)}
                   disabled={creating}
                 >
-                  <AppText variant="body">None</AppText>
+                  <AppText variant="body">Без темы</AppText>
                 </TouchableOpacity>
                 {LEAK_TAGS.map((tag) => (
                   <TouchableOpacity
@@ -240,7 +253,7 @@ export default function CoachThreadsScreen() {
                 ))}
               </ScrollView>
               <TouchableOpacity onPress={closeNewThreadModal} style={styles.modalCancel}>
-                <AppText variant="label" color="#888">Cancel</AppText>
+                <AppText variant="label" color="#888">Отмена</AppText>
               </TouchableOpacity>
             </TouchableOpacity>
           </View>
@@ -388,6 +401,29 @@ const styles = StyleSheet.create({
   },
   startButtonText: {
     fontSize: 15,
+    fontWeight: '700',
+  },
+  bottomBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingBottom: 24,
+    backgroundColor: '#0B0E14',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  newQuestionButton: {
+    backgroundColor: '#4C9AFF',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newQuestionButtonText: {
+    fontSize: 16,
     fontWeight: '700',
   },
   modalBackdrop: {
