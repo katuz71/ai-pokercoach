@@ -253,7 +253,7 @@ serve(async (req) => {
         required: ['action', 'confidence', 'why', 'strategyNext', 'mistakesToAvoid', 'drill'],
       };
 
-      const openaiRes = await fetch('https://api.openai.com/v1/responses', {
+      const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${openAiKey}`,
@@ -261,25 +261,19 @@ serve(async (req) => {
         },
         body: JSON.stringify({
           model,
-          input: [
+          messages: [
             { role: 'system', content: system },
             { role: 'user', content: JSON.stringify(user) },
           ],
-          // Structured Outputs
-          text: {
-            format: {
-              type: 'json_schema',
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
               name: 'poker_coach_response',
               schema,
               strict: true,
             },
           },
-          // Optional: disable storage if you want
-          // store: false,
-          metadata: {
-            user_id: userId,
-            kind: body.kind,
-          },
+          user: userId,
         }),
       });
 
@@ -289,19 +283,13 @@ serve(async (req) => {
       }
 
       const payload = await openaiRes.json();
+      const text = payload.choices?.[0]?.message?.content;
 
-      // Responses API returns output items; extract text
-      const output = payload.output ?? [];
-      let text = '';
-      for (const item of output) {
-        if (item?.type === 'message' && Array.isArray(item.content)) {
-          for (const c of item.content) {
-            if (c?.type === 'output_text' && typeof c.text === 'string') text += c.text;
-          }
-        }
+      if (!text) {
+        return json({ error: 'OpenAI returned empty response' }, 502);
       }
 
-      const parsed: CoachResponse = JSON.parse(text || '{}');
+      const parsed: CoachResponse = JSON.parse(text);
 
       return json(parsed);
     }

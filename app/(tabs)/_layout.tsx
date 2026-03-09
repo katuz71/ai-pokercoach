@@ -1,4 +1,5 @@
 import { Redirect, Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '../../context/AppContext';
 
 export default function TabsLayout() {
@@ -24,10 +25,34 @@ export default function TabsLayout() {
         },
       }}
     >
-      <Tabs.Screen name="analyze" options={{ title: 'Analyze' }} />
-      <Tabs.Screen name="train" options={{ title: 'Train' }} />
-      <Tabs.Screen name="tools" options={{ title: 'Tools' }} />
-      <Tabs.Screen name="profile" options={{ title: 'Profile' }} />
+      <Tabs.Screen
+        name="analyze"
+        options={{
+          title: 'Анализ',
+          tabBarIcon: ({ color, size }) => <Ionicons name="analytics" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="train"
+        options={{
+          title: 'Тренировка',
+          tabBarIcon: ({ color, size }) => <Ionicons name="barbell" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="tools"
+        options={{
+          title: 'Инструменты',
+          tabBarIcon: ({ color, size }) => <Ionicons name="construct" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Профиль',
+          tabBarIcon: ({ color, size }) => <Ionicons name="person" size={size} color={color} />,
+        }}
+      />
     </Tabs>
   );
 }

@@ -142,8 +142,8 @@ serve(async (req) => {
       required: ['is_correct', 'correct_action', 'feedback', 'why', 'next_step', 'mistake_tag'],
     };
 
-    // Call OpenAI Responses API
-    const openaiRes = await fetch('https://api.openai.com/v1/responses', {
+    // Call OpenAI Chat Completions API
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${openAiKey}`,
@@ -151,22 +151,19 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model,
-        input: [
+        messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        text: {
-          format: {
-            type: 'json_schema',
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
             name: 'drill_grade_result',
             schema,
             strict: true,
           },
         },
-        metadata: {
-          user_id: userId,
-          coach_style: body.coach_style,
-        },
+        user: userId,
       }),
     });
 
@@ -176,22 +173,10 @@ serve(async (req) => {
     }
 
     const payload = await openaiRes.json();
-
-    // Extract text from Responses API output
-    const output = payload.output ?? [];
-    let text = '';
-    for (const item of output) {
-      if (item?.type === 'message' && Array.isArray(item.content)) {
-        for (const c of item.content) {
-          if (c?.type === 'output_text' && typeof c.text === 'string') {
-            text += c.text;
-          }
-        }
-      }
-    }
+    const text = payload.choices?.[0]?.message?.content;
 
     if (!text) {
-      return json({ error: 'OpenAI returned empty response' }, 502);
+      return json({ error: 'Empty' }, 502);
     }
 
     // Parse and validate JSON

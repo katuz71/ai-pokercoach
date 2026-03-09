@@ -173,13 +173,13 @@ export default function WeekProgressScreen() {
               </AppText>
             </Card>
 
-            {/* Drills completed */}
+            {/* Тренировок пройдено */}
             <Card style={styles.metricCard}>
               <AppText variant="h1" color="#FF9800" style={styles.metricValue}>
                 {progress?.drills || 0}
               </AppText>
               <AppText variant="body" style={styles.metricLabel}>
-                Drills completed
+                Тренировок пройдено
               </AppText>
             </Card>
 

@@ -139,7 +139,7 @@ export default function InsightsScreen() {
           {skillRatings.length === 0 ? (
             <Card style={styles.emptyCard}>
               <AppText variant="body" color="#A7B0C0" style={styles.emptyText}>
-                Пройди больше тренировок (Drills), чтобы ИИ оценил твои навыки.
+                Пройди больше тренировок, чтобы ИИ оценил твои навыки.
               </AppText>
             </Card>
           ) : (

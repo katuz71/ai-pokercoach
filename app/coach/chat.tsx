@@ -814,11 +814,13 @@ export default function CoachChatScreen() {
                 mode: 'continue',
                 continue_context: { partial_assistant_text: continueContext!.partial_assistant_text },
                 coach_style: coachStyle ?? undefined,
+                stream: false,
               }
             : {
                 thread_id: threadId,
                 message: trimmed,
                 coach_style: coachStyle ?? undefined,
+                stream: false,
               }
         ),
         signal: ac.signal,
@@ -1047,7 +1049,11 @@ export default function CoachChatScreen() {
         } else {
           setMessageIdWithTapHint(null);
         }
+      } else {
+        setMessageIdWithTapHint(null);
       }
+      setLoading(false);
+      setLoadingContext(false);
     } catch (err: unknown) {
       activeAbortControllerRef.current = null;
       setIsStreaming(false);
@@ -1269,16 +1275,17 @@ export default function CoachChatScreen() {
             isUser ? styles.messageBubbleUser : styles.messageBubbleCoach,
           ]}
         >
-          <AppText variant="body" style={styles.messageText}>
+          <AppText variant="body" color="#FFFFFF" style={styles.messageText}>
             {isUser ? (
               item.text
-            ) : item.id.startsWith('streaming-') && (item.text === '' || item.text === 'Coach is typing...') ? (
-              <AppText variant="body" style={{ fontStyle: 'italic', opacity: 0.9 }}>{item.text || 'Coach is typing...'}</AppText>
+            ) : item.text === '' && item.id.startsWith('streaming-') ? (
+              <AppText variant="body" color="#FFFFFF" style={{ fontStyle: 'italic', opacity: 0.7 }}>…</AppText>
             ) : (
               formatCoachText(item.text).map((chunk, index) => (
                 <AppText
                   key={index}
                   variant="body"
+                  color="#FFFFFF"
                   style={chunk.bold ? { fontWeight: '800' } : undefined}
                 >
                   {chunk.text}
@@ -1628,7 +1635,7 @@ export default function CoachChatScreen() {
               {todayShortcuts.map((item) => {
                 const type = item.type ?? 'manual';
                 const label =
-                  type === 'analyze' ? 'Analyze' : type === 'drill' ? 'Drill' : type === 'checkin' ? 'Check-in' : (item.text?.slice(0, 12) || 'Task');
+                  type === 'analyze' ? 'Analyze' : type === 'drill' ? 'Тренировка' : type === 'checkin' ? 'Check-in' : (item.text?.slice(0, 12) || 'Task');
                 const onPress = async () => {
                   await syncActionPlanAndRefresh();
                   if (type === 'analyze') router.push('/analyze/new');

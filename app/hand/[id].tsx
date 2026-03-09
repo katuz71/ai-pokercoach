@@ -85,8 +85,8 @@ export default function HandDetailScreen() {
 
   const { result } = analysis;
   const confidenceColor =
-    result.confidence === 'HIGH' ? '#4CAF50' :
-    result.confidence === 'MEDIUM' ? '#FF9800' : '#F44336';
+    result?.confidence === 'HIGH' ? '#4CAF50' :
+    result?.confidence === 'MEDIUM' ? '#FF9800' : '#F44336';
 
   return (
     <ScreenWrapper>
@@ -103,7 +103,7 @@ export default function HandDetailScreen() {
           </View>
 
           {/* Input data */}
-          {analysis.input.raw_text && (
+          {analysis?.input?.raw_text && (
             <Card style={styles.card}>
               <AppText variant="h3" style={styles.sectionTitle}>Исходные данные</AppText>
               <View style={styles.inputBox}>
@@ -118,14 +118,14 @@ export default function HandDetailScreen() {
           <Card style={styles.card}>
             <AppText variant="h3" style={styles.sectionTitle}>Рекомендация</AppText>
             <View style={styles.actionRow}>
-              <AppText variant="h2" color="#FFFFFF">{result.action}</AppText>
-              {result.sizing && (
+              <AppText variant="h2" color="#FFFFFF">{result?.action ?? ''}</AppText>
+              {result?.sizing && (
                 <AppText variant="body" style={styles.sizing}>{result.sizing}</AppText>
               )}
             </View>
             <View style={[styles.confidenceBadge, { backgroundColor: confidenceColor }]}>
               <AppText variant="label" color="#FFFFFF">
-                Уверенность: {result.confidence}
+                Уверенность: {result?.confidence ?? ''}
               </AppText>
             </View>
           </Card>
@@ -133,7 +133,7 @@ export default function HandDetailScreen() {
           {/* Why */}
           <Card style={styles.card}>
             <AppText variant="h3" style={styles.sectionTitle}>Почему?</AppText>
-            {result.why.map((item, idx) => (
+            {(result?.why || []).map((item, idx) => (
               <View key={idx} style={styles.bulletItem}>
                 <AppText variant="body">• {item}</AppText>
               </View>
@@ -143,7 +143,7 @@ export default function HandDetailScreen() {
           {/* Strategy next */}
           <Card style={styles.card}>
             <AppText variant="h3" style={styles.sectionTitle}>Стратегия на следующие улицы</AppText>
-            {result.strategy_next.map((item, idx) => (
+            {(result?.strategy_next || []).map((item, idx) => (
               <View key={idx} style={styles.bulletItem}>
                 <AppText variant="body">• {item}</AppText>
               </View>
@@ -153,7 +153,7 @@ export default function HandDetailScreen() {
           {/* Common mistakes */}
           <Card style={styles.card}>
             <AppText variant="h3" style={styles.sectionTitle}>Частые ошибки</AppText>
-            {result.common_mistakes.map((item, idx) => (
+            {(result?.common_mistakes || []).map((item, idx) => (
               <View key={idx} style={styles.bulletItem}>
                 <AppText variant="body">• {item}</AppText>
               </View>
@@ -161,7 +161,7 @@ export default function HandDetailScreen() {
           </Card>
 
           {/* Leak link */}
-          {result.leak_link && result.leak_link.tag && (
+          {result?.leak_link?.tag && (
             <Card style={styles.card}>
               <AppText variant="h3" style={styles.sectionTitle}>Возможная протечка</AppText>
               <AppText variant="body" style={styles.leakTag}>
@@ -170,13 +170,15 @@ export default function HandDetailScreen() {
             </Card>
           )}
 
-          {/* Drill */}
+          {/* Упражнение / тренировка */}
           <Card style={styles.card}>
             <AppText variant="h3" style={styles.sectionTitle}>Упражнение</AppText>
-            <AppText variant="body" style={styles.drillTitle}>
-              {result.drill.title}
-            </AppText>
-            {result.drill.steps.map((step, idx) => (
+            {result?.drill?.title != null && (
+              <AppText variant="body" style={styles.drillTitle}>
+                {result.drill.title}
+              </AppText>
+            )}
+            {(result?.drill?.steps || []).map((step, idx) => (
               <View key={idx} style={styles.bulletItem}>
                 <AppText variant="body">{idx + 1}. {step}</AppText>
               </View>

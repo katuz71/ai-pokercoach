@@ -470,6 +470,17 @@ function buildSystemPrompt(
    - "Типичная проблема на этой позиции"`;
 
   return `Ты — персональный тренер по покеру (онлайн). Отвечай строго на русском.
+
+ОБЯЗАТЕЛЬНЫЙ ПОРЯДОК АНАЛИЗА — HAND EVALUATION (выполняй до любых выводов):
+1. В начале анализа (внутренне или в структуре ответа) выпиши все 7 доступных карт: 2 карты Hero + 5 карт борда на текущей улице.
+2. Проверь наличие Флеша: есть ли 5 карт одной масти.
+3. Проверь наличие Стрита: есть ли 5 карт по порядку. ВАЖНО: Тщательно проверь последовательности с картами 7, 8, 9, T, J, Q, K — если такие карты есть среди 7, возможен стрит! Учитывай туз как A-5 (низкий) и A-K (высокий).
+4. Только после этого определи лучшую комбинацию из 5 карт и строй объяснение исходя из неё.
+
+ЗАПРЕЩЕНО:
+- Называть «две пары» или «пара», если из 7 карт можно собрать стрит или флеш — сначала проверь стрит и флеш.
+- Галлюцинировать: если у Hero стрит или флеш, объяснение (why, strategy_next) должно строиться вокруг этой комбинации, а не вокруг «защиты пары» или «дро».
+
 Стиль общения: ${tone}${memoryContext}${topLeaksContext}${evidenceBackedRules}
 
 Правила:
@@ -643,8 +654,8 @@ serve(async (req) => {
       ],
     };
 
-    // Call OpenAI Responses API
-    const openaiRes = await fetch('https://api.openai.com/v1/responses', {
+    // Call OpenAI Chat Completions API
+    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${openAiKey}`,
@@ -652,22 +663,19 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model,
-        input: [
+        messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        text: {
-          format: {
-            type: 'json_schema',
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
             name: 'hand_analysis_result',
             schema,
             strict: true,
           },
         },
-        metadata: {
-          user_id: userId,
-          coach_style: body.coach_style,
-        },
+        user: userId,
       }),
     });
 
@@ -677,19 +685,7 @@ serve(async (req) => {
     }
 
     const payload = await openaiRes.json();
-
-    // Extract text from Responses API output
-    const output = payload.output ?? [];
-    let text = '';
-    for (const item of output) {
-      if (item?.type === 'message' && Array.isArray(item.content)) {
-        for (const c of item.content) {
-          if (c?.type === 'output_text' && typeof c.text === 'string') {
-            text += c.text;
-          }
-        }
-      }
-    }
+    const text = payload.choices?.[0]?.message?.content;
 
     if (!text) {
       return json({ error: 'OpenAI returned empty response' }, 502);

@@ -1,3 +1,5 @@
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
 export type Database = {
   public: {
     Tables: {
@@ -40,8 +42,8 @@ export type Database = {
         Row: {
           id: string;
           user_id: string;
-          input: any; // jsonb
-          result: any; // jsonb
+          input: Json; // jsonb
+          result: Json; // jsonb
           mistake_tags: string[];
           is_deleted: boolean;
           created_at: string;
@@ -49,8 +51,8 @@ export type Database = {
         Insert: {
           id?: string;
           user_id: string;
-          input: any;
-          result: any;
+          input: Json;
+          result: Json;
           mistake_tags?: string[];
           is_deleted?: boolean;
           created_at?: string;
@@ -58,8 +60,8 @@ export type Database = {
         Update: {
           id?: string;
           user_id?: string;
-          input?: any;
-          result?: any;
+          input?: Json;
+          result?: Json;
           mistake_tags?: string[];
           is_deleted?: boolean;
           created_at?: string;
@@ -71,7 +73,7 @@ export type Database = {
           user_id: string;
           type: string;
           content: string;
-          metadata: any; // jsonb
+          metadata: Json; // jsonb
           embedding: string | null; // vector
           created_at: string;
         };
@@ -80,7 +82,7 @@ export type Database = {
           user_id: string;
           type: string;
           content: string;
-          metadata?: any;
+          metadata?: Json;
           embedding?: string | null;
           created_at?: string;
         };
@@ -89,7 +91,7 @@ export type Database = {
           user_id?: string;
           type?: string;
           content?: string;
-          metadata?: any;
+          metadata?: Json;
           embedding?: string | null;
           created_at?: string;
         };
@@ -100,7 +102,7 @@ export type Database = {
           user_id: string;
           period_start: string; // date
           period_end: string; // date
-          summary: any; // jsonb
+          summary: Json; // jsonb
           created_at: string;
         };
         Insert: {
@@ -108,7 +110,7 @@ export type Database = {
           user_id: string;
           period_start: string;
           period_end: string;
-          summary: any;
+          summary: Json;
           created_at?: string;
         };
         Update: {
@@ -116,7 +118,7 @@ export type Database = {
           user_id?: string;
           period_start?: string;
           period_end?: string;
-          summary?: any;
+          summary?: Json;
           created_at?: string;
         };
       };
@@ -124,7 +126,7 @@ export type Database = {
         Row: {
           id: string;
           user_id: string;
-          scenario: any; // jsonb
+          scenario: Json; // jsonb
           user_action: string;
           correct_action: string;
           mistake_tag: string | null;
@@ -132,11 +134,13 @@ export type Database = {
           created_at: string;
           is_correct: boolean;
           leak_tag: string | null;
+          drill_type: string | null;
+          user_answer: string | null;
         };
         Insert: {
           id?: string;
           user_id: string;
-          scenario: any;
+          scenario: Json;
           user_action: string;
           correct_action: string;
           mistake_tag?: string | null;
@@ -144,11 +148,13 @@ export type Database = {
           created_at?: string;
           is_correct?: boolean;
           leak_tag?: string | null;
+          drill_type?: string | null;
+          user_answer?: string | null;
         };
         Update: {
           id?: string;
           user_id?: string;
-          scenario?: any;
+          scenario?: Json;
           user_action?: string;
           correct_action?: string;
           mistake_tag?: string | null;
@@ -156,6 +162,8 @@ export type Database = {
           created_at?: string;
           is_correct?: boolean;
           leak_tag?: string | null;
+          drill_type?: string | null;
+          user_answer?: string | null;
         };
       };
       daily_checkins: {
@@ -163,21 +171,21 @@ export type Database = {
           id: string;
           user_id: string;
           checkin_date: string; // date
-          message: any; // jsonb
+          message: Json; // jsonb
           created_at: string;
         };
         Insert: {
           id?: string;
           user_id: string;
           checkin_date: string;
-          message: any;
+          message: Json;
           created_at?: string;
         };
         Update: {
           id?: string;
           user_id?: string;
           checkin_date?: string;
-          message?: any;
+          message?: Json;
           created_at?: string;
         };
       };
@@ -188,7 +196,7 @@ export type Database = {
           period_start: string; // date
           period_end: string; // date
           focus_tag: string | null;
-          items: any; // jsonb
+          items: Json; // jsonb
           created_at: string;
           updated_at: string;
         };
@@ -198,7 +206,7 @@ export type Database = {
           period_start: string;
           period_end: string;
           focus_tag?: string | null;
-          items: any;
+          items: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -208,7 +216,7 @@ export type Database = {
           period_start?: string;
           period_end?: string;
           focus_tag?: string | null;
-          items?: any;
+          items?: Json;
           created_at?: string;
           updated_at?: string;
         };

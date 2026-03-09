@@ -76,7 +76,8 @@ export default function BankrollScreen() {
   const { totalProfit, roi } = useMemo(() => {
     const totalProfit = sessions.reduce((acc, s) => acc + Number(s.profit ?? 0), 0);
     const totalBuyIn = sessions.reduce((acc, s) => acc + Number(s.buy_in ?? 0), 0);
-    const roi = totalBuyIn > 0 ? (totalProfit / totalBuyIn) * 100 : 0;
+    const roiRaw = totalBuyIn > 0 ? (totalProfit / totalBuyIn) * 100 : 0;
+    const roi = Number.isNaN(roiRaw) ? 0 : roiRaw;
     return { totalProfit, roi };
   }, [sessions]);
 
@@ -145,7 +146,7 @@ export default function BankrollScreen() {
                 {totalProfit >= 0 ? '+' : ''}{totalProfit.toFixed(2)} $
               </AppText>
               <AppText variant="body" color="#A7B0C0" style={styles.roiRow}>
-                ROI: <AppText variant="body" color="#FFFFFF">{roi.toFixed(1)}%</AppText>
+                ROI: <AppText variant="body" color="#FFFFFF">{(Number.isNaN(roi) ? 0 : roi).toFixed(1)}%</AppText>
               </AppText>
             </Card>
 

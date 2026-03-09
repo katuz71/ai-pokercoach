@@ -4,6 +4,7 @@ import {
   Animated,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   TouchableOpacity,
   TouchableWithoutFeedback,
@@ -22,7 +23,9 @@ import { supabase } from '../../lib/supabase';
 import { ensureSession } from '../../lib/ensureSession';
 import { callEdge } from '../../lib/edge';
 import type { TableDrillScenario, TableDrillCorrectAction, RaiseSizingOption } from '../../types/drill';
-import { DrillQueueRow } from '../../types/database';
+import type { DrillQueueRow, Database } from '../../types/database';
+
+type DrillQueueInsert = Database['public']['Tables']['drill_queue']['Insert'];
 
 // ─── GG POKER STYLE THEME ──────────────────────────────────────────────────
 const THEME = {
@@ -144,6 +147,81 @@ function getScenarioRowId(scenario: TableDrillScenario | Record<string, unknown>
   return typeof v === 'string' ? v : null;
 }
 
+/** Приводит действие к формату бэкенда: только fold | call | raise (lowercase). 'check' → 'call'. */
+function normalizeCorrectActionForBackend(value: unknown): TableDrillCorrectAction {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'check') return 'call';
+  if (raw === 'fold' || raw === 'raise') return raw;
+  return 'call';
+}
+
+/** Нормализует сценарий из строки hand_library (или API): snake_case/camelCase, correct_answer → correct_action.
+ * board в БД может быть плоским массивом ['Ad','Kh','Qc','Js','Th'] — тогда flop = [0..2], turn = [3], river = [4].
+ * hero_cards и villain_cards берутся из колонок. */
+function normalizeScenario(raw: unknown): TableDrillScenario | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  const boardRaw = s.board ?? s.Board;
+  let flop: string[] | null = null;
+  let turn: string | null = null;
+  let river: string | null = null;
+  if (Array.isArray(boardRaw) && boardRaw.length >= 3) {
+    flop = [String(boardRaw[0]), String(boardRaw[1]), String(boardRaw[2])];
+    turn = boardRaw[3] != null && boardRaw[3] !== '' ? String(boardRaw[3]) : null;
+    river = boardRaw[4] != null && boardRaw[4] !== '' ? String(boardRaw[4]) : null;
+  } else if (boardRaw && typeof boardRaw === 'object' && !Array.isArray(boardRaw)) {
+    const board = boardRaw as Record<string, unknown>;
+    const f = Array.isArray(board.flop) ? board.flop : Array.isArray(board.Flop) ? board.Flop : null;
+    if (f && f.length >= 3) {
+      flop = [String(f[0]), String(f[1]), String(f[2])];
+      turn = board.turn != null ? String(board.turn) : board.Turn != null ? String(board.Turn) : null;
+      river = board.river != null ? String(board.river) : board.River != null ? String(board.River) : null;
+    }
+  }
+  const heroCards = Array.isArray(s.hero_cards) ? s.hero_cards : Array.isArray(s.heroCards) ? s.heroCards : null;
+  const actionToHeroRaw = s.action_to_hero ?? s.actionToHero;
+  if (!flop || flop.length !== 3 || !heroCards || heroCards.length !== 2 || actionToHeroRaw == null) return null;
+  const correctActionRaw = (s.correct_action ?? s.correct_answer ?? s.correctAction ?? s.correctAnswer) as string | undefined;
+  const correctAction = normalizeCorrectActionForBackend(correctActionRaw);
+  const explanationRaw = String(s.explanation ?? '');
+  const explanation = explanationRaw.replace(/калл/g, 'колл');
+  let actionToHeroStr: string;
+  let villainBet: number;
+  if (typeof actionToHeroRaw === 'string') {
+    actionToHeroStr = actionToHeroRaw.trim() || 'Чек на вас';
+    villainBet = Number(s.villain_bet ?? s.villainBet ?? 0);
+  } else {
+    const obj = actionToHeroRaw as Record<string, unknown>;
+    const type = (obj.type ?? 'check') as string;
+    const sizeBb = Number(obj.size_bb ?? obj.sizeBb ?? 0);
+    actionToHeroStr = type === 'check' ? 'Чек на вас' : `Колл: ${sizeBb} bb`;
+    villainBet = Number(s.villain_bet ?? s.villainBet ?? sizeBb);
+  }
+  return {
+    game: (s.game as string) ?? 'NLH',
+    hero_pos: (s.hero_pos ?? s.heroPos) as TableDrillScenario['hero_pos'],
+    villain_pos: (s.villain_pos ?? s.villainPos) as TableDrillScenario['villain_pos'],
+    effective_stack_bb: Number(s.effective_stack_bb ?? s.effectiveStackBb ?? 100),
+    hero_cards: [String(heroCards[0]), String(heroCards[1])],
+    board: {
+      flop: [flop[0], flop[1], flop[2]],
+      turn,
+      river,
+    },
+    pot_bb: Number(s.pot_bb ?? s.potBb ?? 0),
+    street: (s.street ?? 'flop') as TableDrillScenario['street'],
+    action_to_hero: actionToHeroStr,
+    villain_bet: villainBet,
+    correct_action: correctAction,
+    explanation,
+    drill_type: (s.drill_type ?? s.drillType) as TableDrillScenario['drill_type'],
+    options: (s.options as TableDrillScenario['options']) ?? undefined,
+    correct_option: (s.correct_option ?? s.correctOption) as string | undefined,
+    rule_of_thumb: (s.rule_of_thumb ?? s.ruleOfThumb) as string | undefined,
+    leak_tag: (s.leak_tag ?? s.leakTag) as string | undefined,
+  };
+}
+
 function firstPhrase(text: string, maxLen = 140): string {
   const trimmed = (text ?? '').trim();
   if (!trimmed) return '';
@@ -208,7 +286,7 @@ export default function TrainScreen() {
   const [weeklyFocusTag, setWeeklyFocusTag] = useState<string>('fundamentals');
   const [weeklyFocusWhy, setWeeklyFocusWhy] = useState<string>('');
   const [tomorrowPlanText, setTomorrowPlanText] = useState<string>('');
-  const [tomorrowPlanSubtext, setTomorrowPlanSubtext] = useState<string>('Target: ≥4/5');
+  const [tomorrowPlanSubtext, setTomorrowPlanSubtext] = useState<string>('Цель: ≥4/5');
   const [focusModalVisible, setFocusModalVisible] = useState(false);
 
   const [sessionActive, setSessionActive] = useState(false);
@@ -348,7 +426,7 @@ export default function TrainScreen() {
   useFocusEffect(useCallback(() => { refreshTrain(); refreshFocus(); }, [refreshTrain, refreshFocus]));
 
   useEffect(() => {
-    if (scenario?.action_to_hero) setRaiseSizeBb(Math.max(12, scenario.action_to_hero.size_bb * 2));
+    if (scenario?.villain_bet != null && scenario.villain_bet > 0) setRaiseSizeBb(Math.max(12, scenario.villain_bet * 2));
   }, [scenario]);
 
   useEffect(() => {
@@ -377,7 +455,7 @@ export default function TrainScreen() {
       ]).start();
     });
 
-    if (scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise') {
+    if (scenario.villain_bet > 0) {
       Animated.sequence([Animated.delay(300), Animated.timing(betBadgeOpacity, { toValue: 1, duration: 200, useNativeDriver: true })]).start();
     }
   }, [scenario]);
@@ -397,10 +475,32 @@ export default function TrainScreen() {
       await ensureSession();
       await callEdge('ai-bootstrap-drill-queue', {});
       const fresh = await loadDueDrills();
-      const first = fresh?.[0] ?? null;
+      let first = fresh?.[0] ?? null;
       if (!first) {
-        console.log('startDrill still no row after bootstrap', { count: fresh?.length ?? 0 });
-        return;
+        console.log('startDrill still no row after bootstrap, inserting one row and generating first drill', { count: fresh?.length ?? 0 });
+        const { data: sessionData } = await supabase.auth.getSession();
+        const userId = sessionData.session?.user?.id;
+        if (!userId) {
+          setError('Нет сессии');
+          return;
+        }
+        const { data: inserted, error: insertErr } = await supabase
+          .from('drill_queue')
+          .insert({
+            user_id: userId,
+            leak_tag: 'fundamentals',
+            status: 'due',
+            drill_type: 'action_decision',
+          } as DrillQueueInsert as any)
+          .select('*')
+          .single();
+        if (insertErr || !inserted) {
+          console.error('startDrill insert fallback failed', insertErr);
+          setError('Не удалось создать очередь');
+          return;
+        }
+        first = inserted as DrillQueueRow;
+        setDueDrills([first]);
       }
       setCurrentDrillRow(first);
       resolvedRow = first;
@@ -419,8 +519,29 @@ export default function TrainScreen() {
           await ensureSession();
           await callEdge('ai-bootstrap-drill-queue', {});
           const fresh2 = await loadDueDrills();
-          const next2 = fresh2.find(r => r.id !== lastAnsweredIdRef.current) ?? null;
+          let next2 = fresh2.find(r => r.id !== lastAnsweredIdRef.current) ?? null;
 
+          if (!next2) {
+            console.log('startDrill still no next row after bootstrap, inserting one row', { answeredId: lastAnsweredIdRef.current, count: fresh2.length });
+            const { data: sessionData } = await supabase.auth.getSession();
+            const userId = sessionData.session?.user?.id;
+            if (userId) {
+              const { data: inserted, error: insertErr } = await supabase
+                .from('drill_queue')
+                .insert({
+                  user_id: userId,
+                  leak_tag: 'fundamentals',
+                  status: 'due',
+                  drill_type: 'action_decision',
+                } as DrillQueueInsert as any)
+                .select('*')
+                .single();
+              if (!insertErr && inserted) {
+                next2 = inserted as DrillQueueRow;
+                setDueDrills((prev) => (prev.some((r) => r.id === next2!.id) ? prev : [...prev, next2!]));
+              }
+            }
+          }
           if (!next2) {
             console.log('startDrill still no next row after bootstrap', { answeredId: lastAnsweredIdRef.current, count: fresh2.length });
             return;
@@ -451,20 +572,42 @@ export default function TrainScreen() {
     setPhase('idle');
     try {
       await ensureSession();
-      const leak_tag = resolvedRow.leak_tag ?? 'fundamentals';
-      const drillType: 'action_decision' | 'raise_sizing' =
-        resolvedRow.drill_type === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
-      const data = await callEdge('ai-generate-table-drill', {
-        drill_queue_id: resolvedRow.id,
-        leak_tag,
-        drill_type: drillType,
-      });
-      if (!data || !data.ok || !data.scenario) { setError('Ошибка генерации'); return; }
-      setScenario(data.scenario as TableDrillScenario);
-      setCurrentDrillType(drillType);
-      setCurrentDifficulty((data as any)?.difficulty ?? null);
+      // Случайная раздача из hand_library (RPC быстрее; fallback — одна запись).
+      let handRow: Record<string, unknown> | null = null;
+      const { data: rpcDataRaw, error: rpcError } = await supabase.rpc('get_random_hand');
+      const rpcData = rpcDataRaw as unknown;
+      if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
+        handRow = rpcData[0] as Record<string, unknown>;
+      } else if (!rpcError && rpcData && !Array.isArray(rpcData)) {
+        handRow = rpcData as Record<string, unknown>;
+      }
+      if (!handRow) {
+        const { data: fallbackData, error: handError } = await supabase
+          .from('hand_library')
+          .select('*')
+          .limit(1)
+          .maybeSingle();
+        if (handError) {
+          setError(handError.message ?? 'Ошибка загрузки раздачи');
+          return;
+        }
+        handRow = fallbackData as Record<string, unknown> | null;
+      }
+      if (!handRow) {
+        setError('Нет раздач в библиотеке');
+        return;
+      }
+      const normalized = normalizeScenario(handRow);
+      if (!normalized) {
+        setError('Неверный формат раздачи в библиотеке');
+        return;
+      }
+      (normalized as Record<string, unknown>).drill_queue_id = resolvedRow.id;
+      setScenario(normalized);
+      setCurrentDrillType(resolvedRow.drill_type === 'raise_sizing' ? 'raise_sizing' : 'action_decision');
+      setCurrentDifficulty(null);
       setPhase('answering');
-    } catch (e: any) { setError(e.message); } finally {
+    } catch (e: any) { setError(e?.message ?? String(e)); } finally {
       setIsGenerating(false);
       setLoading(false);
     }
@@ -476,7 +619,7 @@ export default function TrainScreen() {
     return ['jwt', 'expired', 'unauthorized', 'auth'].some((k) => lower.includes(k));
   }
 
-  async function selectTableAction(userAnswer: TableDrillCorrectAction | RaiseSizingOption) {
+  async function selectTableAction(userAnswer: TableDrillCorrectAction | 'check' | RaiseSizingOption) {
     if (submittingRef.current) return;
     submittingRef.current = true;
 
@@ -516,11 +659,11 @@ export default function TrainScreen() {
     const drillType = (currentDrillType ?? scenario.drill_type) === 'raise_sizing' ? 'raise_sizing' : 'action_decision';
     const payload: Record<string, unknown> = {
       drill_queue_id: drillQueueId,
-      scenario,
+      scenario: { ...scenario, correct_action: normalizeCorrectActionForBackend(scenario.correct_action) },
       drill_type: drillType,
     };
-    if (drillType === 'raise_sizing') payload.user_answer = userAnswer;
-    else { payload.user_action = userAnswer; if (userAnswer === 'raise') payload.raise_size_bb = raiseSizeBb; }
+    payload.user_action = (String(userAnswer).toLowerCase() === 'check' ? 'call' : userAnswer) as typeof userAnswer;
+    if (userAnswer === 'raise') payload.raise_size_bb = raiseSizeBb;
 
     function doRecovery() {
       setLoading(false);
@@ -543,7 +686,10 @@ export default function TrainScreen() {
       }
 
       setLastTrainingEventId(data?.training_event_id ?? null);
-      setTableGradeResult({ isCorrect: data?.correct === true, explanation: data?.explanation ?? '' });
+      setTableGradeResult({
+        isCorrect: data?.correct === true,
+        explanation: (scenario?.explanation ?? data?.explanation ?? '').trim(),
+      });
       setLoading(false);
       setPhase('graded');
       lastAnsweredIdRef.current = drillQueueId;
@@ -586,7 +732,10 @@ export default function TrainScreen() {
             return;
           }
           setLastTrainingEventId(data?.training_event_id ?? null);
-          setTableGradeResult({ isCorrect: data?.correct === true, explanation: data?.explanation ?? '' });
+          setTableGradeResult({
+            isCorrect: data?.correct === true,
+            explanation: (scenario?.explanation ?? data?.explanation ?? '').trim(),
+          });
           setLoading(false);
           setPhase('graded');
           lastAnsweredIdRef.current = drillQueueId;
@@ -634,23 +783,21 @@ export default function TrainScreen() {
   }
 
   function actionLineText(): string {
-    if (!scenario) return 'Checked to you';
+    if (!scenario) return 'Чек на вас';
     const type = currentDrillType ?? scenario.drill_type;
-    if (type === 'raise_sizing') return 'Choose raise size';
-    const a = scenario.action_to_hero;
-    if (a?.type === 'check') return 'Checked to you';
-    return a ? `To call: ${a.size_bb} bb` : '—';
+    if (type === 'raise_sizing') return 'Выберите размер рейза';
+    return scenario.action_to_hero || 'Чек на вас';
   }
 
   function communityCards(sc: TableDrillScenario): string[] {
-    const out = [...sc.board.flop];
-    if (sc.board.turn) out.push(sc.board.turn);
-    if (sc.board.river) out.push(sc.board.river);
+    const out = [...(sc?.board?.flop || [])];
+    if (sc?.board?.turn) out.push(sc.board.turn);
+    if (sc?.board?.river) out.push(sc.board.river);
     return out;
   }
 
   useEffect(() => {
-    if (showActionBar && scenario?.action_to_hero) {
+    if (showActionBar && scenario) {
       heroPulseScale.setValue(1);
       heroPulseLoopRef.current = Animated.loop(Animated.sequence([
         Animated.timing(heroPulseScale, { toValue: 1.05, duration: 800, useNativeDriver: true }),
@@ -662,6 +809,12 @@ export default function TrainScreen() {
   }, [showActionBar, scenario]);
 
   const bottomPadding = 0; // Таббар уже учитывает safe area
+
+  const currentBet = Number(scenario?.villain_bet ?? 0) || 0;
+  // Ставка оппонента 0 — показываем «ЧЕК» вместо «КОЛЛ» и «БЕТ» вместо «РЕЙЗ»
+  const isCheckToYou = currentBet === 0;
+  const maxRaise = scenario?.effective_stack_bb || 200;
+  const minRaise = isCheckToYou ? 1 : currentBet * 2;
 
   console.log('render state', { loading, phase, scenario: !!scenario, showActionBar, tableGradeResult: !!tableGradeResult });
 
@@ -683,7 +836,7 @@ export default function TrainScreen() {
 
           <View style={styles.boardCenter}>
             <View style={styles.potDisplay}>
-              <AppText style={styles.potText}>Pot: {scenario ? scenario.pot_bb : 0}</AppText>
+              <AppText style={styles.potText}>Банк: {scenario ? scenario.pot_bb : 0}</AppText>
             </View>
             <View style={styles.boardRow}>
               {scenario && communityCards(scenario).map((code, i) => (
@@ -696,7 +849,9 @@ export default function TrainScreen() {
 
           <View style={styles.dealerBtn}><AppText style={styles.dealerText}>D</AppText></View>
 
-          {SEAT_POSITIONS.map((pos, index) => {
+          {/* Сначала пустые места (блайды BB/SB и др.), затем Hero и Villain — чтобы ставка соперника не перекрывалась */}
+          {([1, 2, 4, 5, 0, 3] as const).map((index) => {
+            const pos = SEAT_POSITIONS[index];
             const isHero = index === HERO_SEAT_INDEX;
             const isVillain = index === VILLAIN_SEAT_INDEX;
             const isEmpty = !isHero && !isVillain;
@@ -704,32 +859,48 @@ export default function TrainScreen() {
             const stack = scenario && (isHero || isVillain) ? `${scenario.effective_stack_bb} bb` : '';
 
             return (
-              <View key={index} style={[styles.seatContainer, { top: pos.top, bottom: pos.bottom, left: pos.left, right: pos.right, marginLeft: pos.marginLeft }]}>
+              <View key={index} style={[styles.seatContainer, { top: pos.top, bottom: pos.bottom, left: pos.left, right: pos.right, marginLeft: pos.marginLeft }, (isHero || isVillain) && styles.seatContainerActive]}>
                 {isEmpty ? (
                   <View style={styles.emptySeat}><AppText style={styles.seatLabelEmpty}>{posLabel}</AppText></View>
                 ) : (
-                  <Animated.View style={[styles.activeSeat, isHero && { transform: [{ scale: heroPulseScale }] }]}>
-                    {isVillain && scenario && (scenario.action_to_hero.type === 'bet' || scenario.action_to_hero.type === 'raise') && (
-                       <Animated.View style={[styles.villainBet, { opacity: betBadgeOpacity }]}>
-                         <ChipStack amountBb={scenario.action_to_hero.size_bb} />
-                         <AppText style={styles.villainBetText}>{scenario.action_to_hero.size_bb}</AppText>
-                       </Animated.View>
+                  <Animated.View style={[styles.activeSeat, isHero && { transform: [{ scale: heroPulseScale }] }, isVillain && styles.activeSeatVillain]}>
+                    {scenario && (
+                      <View style={[styles.seatPositionBadge, isVillain && styles.seatPositionBadgeVillain]}>
+                        <AppText style={styles.seatPositionBadgeText} numberOfLines={1} ellipsizeMode="tail">
+                          {isHero ? scenario.hero_pos : scenario.villain_pos}
+                        </AppText>
+                      </View>
                     )}
-
                     <View style={[styles.avatar, isHero ? styles.avatarHero : styles.avatarVillain]}>
-                       <AppText style={styles.avatarText}>{isHero ? 'You' : 'Opp'}</AppText>
+                       <View style={[!isHero && styles.avatarLabelWrap]}>
+                         <AppText
+                           numberOfLines={1}
+                           ellipsizeMode="tail"
+                           adjustsFontSizeToFit
+                           style={[styles.avatarText, !isHero && styles.avatarTextNoWrap]}
+                           allowFontScaling={false}
+                         >
+                           {isHero ? 'Вы' : 'Соперник'}
+                         </AppText>
+                       </View>
                     </View>
                     <View style={styles.seatInfo}>
                       <AppText style={styles.seatStackText}>{stack}</AppText>
                     </View>
+                    {isVillain && scenario && scenario.villain_bet > 0 && (
+                       <Animated.View style={[styles.villainBet, { opacity: betBadgeOpacity }]}>
+                         <ChipStack amountBb={scenario.villain_bet} />
+                         <AppText style={styles.villainBetText}>{scenario.villain_bet}</AppText>
+                       </Animated.View>
+                    )}
                     
                     {isHero && scenario && (
                        <View style={styles.heroCards}>
                          <Animated.View style={{ opacity: heroCard1Opacity, transform: [{ translateY: heroCard1TranslateY }, { rotate: '-6deg' }] }}>
-                           <CardView code={scenario?.hero_cards[0]} size="lg" />
+                           <CardView code={scenario?.hero_cards?.[0] ?? '??'} size="lg" />
                          </Animated.View>
                          <Animated.View style={{ opacity: heroCard2Opacity, transform: [{ translateY: heroCard2TranslateY }, { rotate: '6deg' }], marginLeft: -20, marginTop: 5 }}>
-                           <CardView code={scenario?.hero_cards[1]} size="lg" />
+                           <CardView code={scenario?.hero_cards?.[1] ?? '??'} size="lg" />
                          </Animated.View>
                        </View>
                     )}
@@ -746,7 +917,7 @@ export default function TrainScreen() {
         
         {!scenario && !isGenerating && (
            <TouchableOpacity style={styles.btnStart} onPress={startDrill} activeOpacity={0.8} disabled={isGenerating}>
-              <AppText style={styles.btnStartText}>Новый Drill</AppText>
+              <AppText style={styles.btnStartText}>Начать тренировку</AppText>
            </TouchableOpacity>
         )}
 
@@ -760,11 +931,16 @@ export default function TrainScreen() {
         {tableGradeResult && scenario && (
            <View style={styles.feedbackContainer}>
               <View style={[styles.feedbackHeader, { backgroundColor: tableGradeResult.isCorrect ? THEME.BTN_CALL : THEME.BTN_FOLD }]}>
-                 <AppText style={styles.feedbackTitle}>{tableGradeResult.isCorrect ? 'Correct Decision' : 'Incorrect Decision'}</AppText>
+                 <AppText style={styles.feedbackTitle}>{tableGradeResult.isCorrect ? 'ВЕРНОЕ РЕШЕНИЕ' : 'НЕВЕРНОЕ РЕШЕНИЕ'}</AppText>
               </View>
-              <AppText style={styles.feedbackBody}>{firstPhrase(tableGradeResult.explanation)}</AppText>
+              <ScrollView style={styles.feedbackScroll} contentContainerStyle={styles.feedbackScrollContent}>
+                {scenario.action_to_hero ? (
+                  <AppText style={styles.feedbackSituation}>Ситуация: {scenario.action_to_hero}</AppText>
+                ) : null}
+                <AppText style={styles.feedbackBody}>{tableGradeResult.explanation.replace(/калл/gi, 'колл')}</AppText>
+              </ScrollView>
               <TouchableOpacity style={styles.btnNext} onPress={closeResultModal} activeOpacity={0.8}>
-                 <AppText style={styles.btnNextText}>Next Hand</AppText>
+                 <AppText style={styles.btnNextText}>СЛЕДУЮЩАЯ РАЗДАЧА</AppText>
               </TouchableOpacity>
            </View>
         )}
@@ -779,7 +955,7 @@ export default function TrainScreen() {
                <View style={styles.gridRowSizing}>
                  <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('2.5x')} disabled={isSubmitting}><AppText style={styles.btnActionText}>2.5x</AppText></TouchableOpacity>
                  <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('3x')} disabled={isSubmitting}><AppText style={styles.btnActionText}>3x</AppText></TouchableOpacity>
-                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('overbet')} disabled={isSubmitting}><AppText style={styles.btnActionText}>Overbet</AppText></TouchableOpacity>
+                 <TouchableOpacity style={styles.btnSizing} onPress={() => selectTableAction('overbet')} disabled={isSubmitting}><AppText style={styles.btnActionText}>Овербет</AppText></TouchableOpacity>
                </View>
             ) : (
               <View style={styles.actionGrid}>
@@ -791,7 +967,7 @@ export default function TrainScreen() {
                     onPress={() => selectTableAction('fold')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ transform: [{ scale: foldScale }], alignItems: 'center' }}>
-                      <AppText style={styles.btnActionLabel}>FOLD</AppText>
+                      <AppText style={styles.btnActionLabel}>ФОЛД</AppText>
                     </Animated.View>
                   </Pressable>
                   
@@ -799,18 +975,18 @@ export default function TrainScreen() {
                     style={[styles.btnAction, { backgroundColor: THEME.BTN_CALL }]}
                     onPressIn={() => Animated.timing(callScale, { toValue: 0.95, duration: 100, useNativeDriver: true }).start()}
                     onPressOut={() => Animated.timing(callScale, { toValue: 1, duration: 100, useNativeDriver: true }).start()}
-                    onPress={() => selectTableAction('call')} disabled={isSubmitting}
+                    onPress={() => selectTableAction(isCheckToYou ? 'check' : 'call')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ transform: [{ scale: callScale }], alignItems: 'center' }}>
-                      <AppText style={styles.btnActionLabel}>CALL</AppText>
-                      <AppText style={styles.btnActionSub}>{scenario?.action_to_hero?.size_bb || 0}</AppText>
+                      <AppText style={styles.btnActionLabel}>{isCheckToYou ? 'ЧЕК' : 'КОЛЛ'}</AppText>
+                      {!isCheckToYou && <AppText style={styles.btnActionSub}>{currentBet} bb</AppText>}
                     </Animated.View>
                   </Pressable>
                 </View>
 
                 {/* Raise Full-width Section */}
                 <View style={styles.raiseFullContainer}>
-                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.max(2, p - 1))} disabled={isSubmitting}>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.max(minRaise, p - 1))} disabled={isSubmitting}>
                     <AppText style={styles.raiseInlineAdjustText}>−</AppText>
                   </TouchableOpacity>
 
@@ -821,11 +997,11 @@ export default function TrainScreen() {
                     onPress={() => selectTableAction('raise')} disabled={isSubmitting}
                   >
                     <Animated.View style={{ alignItems: 'center', transform: [{ scale: raiseScale }] }}>
-                      <AppText style={styles.btnActionLabel}>RAISE TO</AppText>
+                      <AppText style={styles.btnActionLabel}>{isCheckToYou ? 'БЕТ' : 'РЕЙЗ ДО'}</AppText>
                       <AppText style={styles.btnActionSub}>{raiseSizeBb} bb</AppText>
                     </Animated.View>
                   </Pressable>
-                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => p + 1)} disabled={isSubmitting}>
+                  <TouchableOpacity style={styles.raiseInlineAdjust} onPress={() => setRaiseSizeBb(p => Math.min(maxRaise, p + 1))} disabled={isSubmitting}>
                     <AppText style={styles.raiseInlineAdjustText}>+</AppText>
                   </TouchableOpacity>
                 </View>
@@ -881,32 +1057,49 @@ const styles = StyleSheet.create({
   dealerText: { color: '#000', fontWeight: '900', fontSize: 13 },
 
   seatContainer: { position: 'absolute', width: 60, height: 60, alignItems: 'center', justifyContent: 'center', zIndex: 20 },
+  seatContainerActive: { zIndex: 35, elevation: 10 },
   emptySeat: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },
   seatLabelEmpty: { color: 'rgba(255,255,255,0.2)', fontSize: 11, fontWeight: '800' },
   
   activeSeat: { alignItems: 'center' },
-  avatar: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 2, shadowColor: '#000', shadowOffset: {width:0,height:4}, shadowOpacity:0.6, shadowRadius:6, elevation: 5 },
+  activeSeatVillain: { minWidth: 100, flexShrink: 0, gap: 10 },
+  seatPositionBadge: {
+    marginBottom: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    flexShrink: 0,
+    minWidth: 44,
+  },
+  seatPositionBadgeVillain: { marginBottom: 12 },
+  seatPositionBadgeText: { color: '#FCD34D', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 },
+  avatar: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', borderWidth: 2, shadowColor: '#000', shadowOffset: {width:0,height:4}, shadowOpacity:0.6, shadowRadius:6, elevation: 5, minWidth: 48, flexShrink: 0 },
   avatarHero: { backgroundColor: '#1E3A8A', borderColor: '#3B82F6' },
-  avatarVillain: { backgroundColor: '#7F1D1D', borderColor: '#EF4444' },
+  avatarVillain: { backgroundColor: '#7F1D1D', borderColor: '#EF4444', minWidth: 120, width: 120, flexShrink: 0 },
   avatarText: { color: '#FFF', fontWeight: '900', fontSize: 14 },
-  seatInfo: { backgroundColor: '#000', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginTop: -8, borderWidth: 1, borderColor: '#374151', alignItems: 'center', zIndex: 40 },
+  avatarTextNoWrap: { flexShrink: 0 },
+  avatarLabelWrap: { minWidth: 120, maxWidth: 120, flexShrink: 0, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+  seatInfo: { backgroundColor: '#000', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginTop: -8, borderWidth: 1, borderColor: '#374151', alignItems: 'center', zIndex: 40, marginBottom: 4 },
   seatStackText: { color: '#FCD34D', fontSize: 12, fontWeight: '900' },
 
   heroCards: { position: 'absolute', bottom: 35, flexDirection: 'row', zIndex: 30, shadowColor: '#000', shadowOffset: {width:0, height:4}, shadowOpacity: 0.5, shadowRadius: 8 },
   villainBet: {
-    position: 'absolute',
-    top: 75,
+    marginTop: 8,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.85)',
-    padding: 4,
-    paddingRight: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: '#EF4444',
     gap: 6,
-    zIndex: 30,
+    zIndex: 25,
+    minHeight: 36,
   },
   villainBetText: { color: '#FFF', fontWeight: '900', fontSize: 13 },
 
@@ -968,7 +1161,10 @@ const styles = StyleSheet.create({
   feedbackContainer: { backgroundColor: '#1F2937', borderRadius: 8, overflow: 'hidden', marginBottom: 8 },
   feedbackHeader: { paddingVertical: 12, alignItems: 'center' },
   feedbackTitle: { color: '#FFF', fontWeight: '900', fontSize: 16, textTransform: 'uppercase', letterSpacing: 1 },
-  feedbackBody: { color: '#E5E7EB', padding: 16, fontSize: 15, textAlign: 'center', lineHeight: 22, fontWeight: '500' },
+  feedbackScroll: { maxHeight: 220 },
+  feedbackScrollContent: { padding: 16, paddingBottom: 8 },
+  feedbackSituation: { color: '#9CA3AF', fontSize: 14, textAlign: 'center', marginBottom: 12, fontStyle: 'italic' },
+  feedbackBody: { color: '#E5E7EB', fontSize: 15, textAlign: 'center', lineHeight: 22, fontWeight: '500' },
   btnNext: { backgroundColor: THEME.BTN_CALL, margin: 16, marginTop: 0, height: 56, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   btnNextText: { color: '#FFF', fontWeight: '900', fontSize: 16, textTransform: 'uppercase' },
 });

@@ -50,10 +50,10 @@ type SubmitRequest = {
   mistake_reason?: string;
   drill_queue_id?: string;
   scenario?: TableDrillScenario;
-  /** Legacy: fold | call | raise for action_decision */
-  user_action?: UserAction;
-  /** Generic: fold/call/raise or 2.5x/3x/overbet */
-  user_answer?: string;
+  /** User's choice: fold | call | raise for action_decision, or 2.5x | 3x | overbet for raise_sizing. Use this field only. */
+  user_action?: UserAction | RaiseSizingOption;
+  /** @deprecated Use user_action. Accepted only as fallback; we write to user_action in DB. */
+  user_answer?: UserAction | RaiseSizingOption;
   drill_type?: 'action_decision' | 'raise_sizing';
 };
 
@@ -160,37 +160,39 @@ serve(async (req) => {
       return json({ ok: true });
     }
 
-    const { drill_queue_id, scenario, user_action, user_answer: bodyUserAnswer, drill_type: bodyDrillType, mistake_reason: bodyMistakeReason } = body;
+    const { drill_queue_id, scenario, user_action: bodyUserActionRaw, user_answer: bodyUserAnswer, drill_type: bodyDrillType, mistake_reason: bodyMistakeReason } = body;
+    // Схема БД training_events: только user_action и correct_action. user_answer не пишем.
+    const bodyUserAction = bodyUserActionRaw ?? bodyUserAnswer;
     if (!drill_queue_id || !scenario) {
       return err('Missing required fields: drill_queue_id, scenario');
     }
 
     const drillType = bodyDrillType ?? scenario.drill_type ?? 'action_decision';
-    let userAnswer: string;
-    let correctAnswer: string;
+    let userAction: string;
+    let correctAction: string;
 
     if (drillType === 'raise_sizing') {
       const correctOption = scenario.correct_option;
       if (!correctOption || !RAISE_SIZING_OPTIONS.includes(correctOption as RaiseSizingOption)) {
         return err('scenario.correct_option must be one of 2.5x, 3x, overbet');
       }
-      const ua = bodyUserAnswer ?? body.user_answer;
+      const ua = bodyUserAction;
       if (!ua || !RAISE_SIZING_OPTIONS.includes(ua as RaiseSizingOption)) {
-        return err('user_answer must be one of 2.5x, 3x, overbet for raise_sizing');
+        return err('user_action must be one of 2.5x, 3x, overbet for raise_sizing');
       }
-      userAnswer = ua;
-      correctAnswer = correctOption;
+      userAction = ua;
+      correctAction = correctOption;
     } else {
-      const correctAction = scenario.correct_action;
-      if (!correctAction || !VALID_ACTIONS.includes(correctAction as UserAction)) {
+      const scenarioCorrectAction = scenario.correct_action;
+      if (!scenarioCorrectAction || !VALID_ACTIONS.includes(scenarioCorrectAction as UserAction)) {
         return err('scenario.correct_action must be one of fold, call, raise');
       }
-      const ua = user_action ?? bodyUserAnswer ?? body.user_answer;
+      const ua = bodyUserAction;
       if (!ua || !VALID_ACTIONS.includes(ua as UserAction)) {
-        return err('user_action or user_answer must be one of fold, call, raise');
+        return err('user_action must be one of fold, call, raise');
       }
-      userAnswer = ua;
-      correctAnswer = correctAction;
+      userAction = ua;
+      correctAction = scenarioCorrectAction;
     }
 
     const { data: queueRow, error: selectError } = await supabaseUser
@@ -203,28 +205,28 @@ serve(async (req) => {
       return err('drill_queue not found or access denied', selectError?.message, 404);
     }
 
-    const correct = userAnswer === correctAnswer;
+    const correct = userAction === correctAction;
     const leak_tag = queueRow.leak_tag ?? 'fundamentals';
     const enforcedLeakTag = enforceAllowedLeakTag(leak_tag) ?? 'fundamentals';
     const mistake_reason = normalizeMistakeReason(bodyMistakeReason, correct);
 
     const now = new Date().toISOString();
 
+    // Схема БД (training_events): только user_action и correct_action.
+    const insertPayload: Record<string, unknown> = {
+      user_id: userId,
+      scenario: scenario as Record<string, unknown>,
+      user_action: userAction,
+      correct_action: correctAction,
+      mistake_tag: correct ? null : enforcedLeakTag,
+      is_correct: correct,
+      leak_tag: enforcedLeakTag,
+      drill_type: drillType,
+      mistake_reason: mistake_reason,
+    };
     const { data: insertedEvent, error: insertError } = await supabaseUser
       .from('training_events')
-      .insert({
-        user_id: userId,
-        scenario: scenario as Record<string, unknown>,
-        user_action: userAnswer,
-        correct_action: correctAnswer,
-        mistake_tag: correct ? null : enforcedLeakTag,
-        is_correct: correct,
-        leak_tag: enforcedLeakTag,
-        drill_type: drillType,
-        user_answer: userAnswer,
-        correct_answer: correctAnswer,
-        mistake_reason,
-      })
+      .insert(insertPayload)
       .select('id')
       .single();
 

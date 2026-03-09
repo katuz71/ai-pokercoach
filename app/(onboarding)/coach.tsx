@@ -37,13 +37,17 @@ function CoachCard({
 
 export default function CoachSetup() {
   const router = useRouter();
-  const { profile, setCoachStyle } = useApp();
+  const { profile, setCoachStyle, onboardingDone } = useApp();
 
   const [style, setStyle] = useState<CoachStyle>(profile?.coachStyle ?? 'mental');
 
   const onNext = async () => {
     await setCoachStyle(style);
-    router.push('/(onboarding)/finish');
+    if (onboardingDone) {
+      router.back();
+    } else {
+      router.push('/(onboarding)/finish');
+    }
   };
 
   return (

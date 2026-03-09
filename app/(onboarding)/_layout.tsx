@@ -1,11 +1,16 @@
-import { Redirect, Stack } from 'expo-router';
+import { Redirect, Stack, usePathname } from 'expo-router';
 import { useApp } from '../../context/AppContext';
 
 export default function OnboardingLayout() {
   const { isHydrated, onboardingDone } = useApp();
+  const pathname = usePathname();
 
   if (!isHydrated) return null;
-  if (onboardingDone) return <Redirect href="/(tabs)/analyze" />;
+
+  // Если онбординг пройден, и юзер пытается открыть любой экран кроме coach -> на главную
+  if (onboardingDone && !pathname.includes('coach')) {
+    return <Redirect href="/(tabs)/analyze" />;
+  }
 
   return (
     <Stack screenOptions={{ headerShown: false }}>

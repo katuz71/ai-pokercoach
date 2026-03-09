@@ -1,3 +1,4 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
@@ -101,7 +102,8 @@ export default function ProfileScreen() {
     if (!user) return;
 
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const now = new Date();
+      const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().split('T')[0];
 
       const { data, error } = await supabase
         .from('action_plans')
@@ -184,18 +186,19 @@ export default function ProfileScreen() {
     }
   };
 
-  useEffect(() => {
-    if (!user) {
-      setLoading(false);
-      return;
-    }
-
-    loadProfile();
-    loadTodayCheckin();
-    checkTodayActivity();
-    loadCurrentActionPlan();
-    loadMistakeReasons7d();
-  }, [user]);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+      loadProfile();
+      loadTodayCheckin();
+      checkTodayActivity();
+      loadCurrentActionPlan();
+      loadMistakeReasons7d();
+    }, [user])
+  );
 
   const loadProfile = async () => {
     if (!user) return;
@@ -232,7 +235,8 @@ export default function ProfileScreen() {
     if (!user) return;
 
     try {
-      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const now = new Date();
+      const today = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().split('T')[0]; // YYYY-MM-DD local
 
       const { data, error } = await supabase
         .from('daily_checkins')
@@ -260,8 +264,9 @@ export default function ProfileScreen() {
     setLoadingActivity(true);
 
     try {
-      const todayUTC = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-      const startOfTodayUTC = `${todayUTC}T00:00:00.000Z`;
+      const now = new Date();
+      const todayLocal = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().split('T')[0]; // YYYY-MM-DD local
+      const startOfTodayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
       // Check for hand analyses today
       const { data: handsData, error: handsError } = await supabase
@@ -269,7 +274,7 @@ export default function ProfileScreen() {
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)
         .eq('is_deleted', false)
-        .gte('created_at', startOfTodayUTC)
+        .gte('created_at', startOfTodayLocal)
         .limit(1);
 
       if (handsError) throw handsError;
@@ -279,7 +284,7 @@ export default function ProfileScreen() {
         .from('training_events')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)
-        .gte('created_at', startOfTodayUTC)
+        .gte('created_at', startOfTodayLocal)
         .limit(1);
 
       if (drillsError) throw drillsError;
@@ -289,7 +294,7 @@ export default function ProfileScreen() {
         .from('daily_checkins')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)
-        .eq('checkin_date', todayUTC)
+        .eq('checkin_date', todayLocal)
         .limit(1);
 
       if (checkinError) throw checkinError;
@@ -440,7 +445,7 @@ export default function ProfileScreen() {
     return (
       <ScreenWrapper>
         <View style={styles.container}>
-          <AppText variant="h2">Profile</AppText>
+          <AppText variant="h2">Профиль</AppText>
           <Card style={styles.errorCard}>
             <AppText variant="body" color="#FF5A6A">{error}</AppText>
           </Card>
@@ -456,7 +461,7 @@ export default function ProfileScreen() {
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
       >
         <View style={styles.container}>
-          <AppText variant="h2">Profile</AppText>
+          <AppText variant="h2">Профиль</AppText>
 
           {/* AI Coach Banner — entry point to chat with coach */}
           <Card style={styles.coachBanner}>
@@ -479,7 +484,7 @@ export default function ProfileScreen() {
 
           {/* Daily Check-in Section */}
           <Card style={styles.checkinSection}>
-            <AppText variant="h3" style={styles.sectionTitle}>Daily Check-in</AppText>
+            <AppText variant="h3" style={styles.sectionTitle}>Ежедневный чек-ин</AppText>
             
             {dailyCheckin ? (
               <View style={styles.checkinContent}>
@@ -510,7 +515,7 @@ export default function ProfileScreen() {
                   </AppText>
                 </View>
 
-                {/* Micro Drill */}
+                {/* Микро-тренировка */}
                 <Card style={styles.drillCard}>
                   <AppText variant="body" style={styles.drillQuestion}>
                     {dailyCheckin.micro_drill.question}
@@ -568,7 +573,7 @@ export default function ProfileScreen() {
             <Card style={styles.reminderCard}>
               <AppText variant="h3" style={styles.reminderTitle}>Сегодня без тренировки</AppText>
               <AppText variant="body" style={styles.reminderText}>
-                Сделай 1 разбор или 1 drill — streak будет расти.
+                Сделай 1 разбор или 1 тренировку — streak будет расти.
               </AppText>
               <View style={styles.reminderButtons}>
                 <TouchableOpacity
@@ -584,7 +589,7 @@ export default function ProfileScreen() {
                   style={[styles.reminderButton, styles.reminderButtonSecondary]}
                 >
                   <AppText variant="label" color="#4C9AFF" style={styles.reminderButtonText}>
-                    Drill
+                    Тренировка
                   </AppText>
                 </TouchableOpacity>
               </View>
@@ -597,7 +602,7 @@ export default function ProfileScreen() {
             style={styles.weekProgressCard}
           >
             <View style={styles.weekProgressContent}>
-              <AppText variant="h3" style={styles.weekProgressTitle}>Week Progress</AppText>
+              <AppText variant="h3" style={styles.weekProgressTitle}>Прогресс за неделю</AppText>
               <AppText variant="body" style={styles.weekProgressDescription}>
                 Твои метрики за последние 7 дней
               </AppText>
@@ -606,7 +611,7 @@ export default function ProfileScreen() {
           </TouchableOpacity>
 
           <Card style={styles.section}>
-            <AppText variant="h3" style={styles.sectionTitle}>Coach Settings</AppText>
+            <AppText variant="h3" style={styles.sectionTitle}>Настройки тренера</AppText>
             <AppText variant="body" style={styles.sectionValue}>
               Текущий стиль: {profile?.coach_style ? labelByStyle[profile.coach_style as CoachStyle] : '—'}
             </AppText>
@@ -621,7 +626,7 @@ export default function ProfileScreen() {
           </Card>
 
           <Card style={styles.section}>
-            <AppText variant="h3" style={styles.sectionTitle}>Player Info</AppText>
+            <AppText variant="h3" style={styles.sectionTitle}>Информация об игроке</AppText>
             <AppText variant="body" style={styles.sectionValue}>
               Уровень: {profile?.skill_level ?? '—'}
             </AppText>
@@ -635,7 +640,7 @@ export default function ProfileScreen() {
 
           {/* Coach Review Section */}
           <Card style={styles.section}>
-            <AppText variant="h3" style={styles.sectionTitle}>Coach Review</AppText>
+            <AppText variant="h3" style={styles.sectionTitle}>Разбор от тренера</AppText>
             <AppText variant="body" style={styles.sectionDescription}>
               Анализ твоих ошибок за последние 30 раздач
             </AppText>
@@ -665,14 +670,14 @@ export default function ProfileScreen() {
             {/* Most common mistake reasons (7 days) */}
             <Card style={styles.mistakeReasonsCard}>
               <AppText variant="h3" style={styles.mistakeReasonsTitle}>
-                Most common mistake reasons (7 days)
+                Частые причины ошибок (7 дней)
               </AppText>
               {loadingMistakeReasons ? (
-                <AppText variant="body" color="#A7B0C0">Loading…</AppText>
+                <AppText variant="body" color="#A7B0C0">Загрузка…</AppText>
               ) : mistakeReasonsError ? (
                 <AppText variant="body" color="#FF9800">{mistakeReasonsError}</AppText>
               ) : mistakeReasons7d.length === 0 ? (
-                <AppText variant="body" color="#A7B0C0">No mistakes in last 7 days.</AppText>
+                <AppText variant="body" color="#A7B0C0">За последние 7 дней ошибок нет.</AppText>
               ) : (
                 mistakeReasons7d.map(({ reason, count }, idx) => (
                   <AppText key={reason} variant="body" style={styles.mistakeReasonLine}>
@@ -725,7 +730,7 @@ export default function ProfileScreen() {
                       }
                     >
                       <AppText variant="label" color="#4C9AFF" style={styles.trainThisButtonText}>
-                        Train this
+                        Тренировать это
                       </AppText>
                     </TouchableOpacity>
                   );
@@ -750,7 +755,7 @@ export default function ProfileScreen() {
 
           {/* Action Plan Section */}
           <Card style={styles.section}>
-            <AppText variant="h3" style={styles.sectionTitle}>Action Plan (7 дней)</AppText>
+            <AppText variant="h3" style={styles.sectionTitle}>План действий (7 дней)</AppText>
             <AppText variant="body" style={styles.sectionDescription}>
               План действий для исправления топ ошибки
             </AppText>
@@ -761,7 +766,7 @@ export default function ProfileScreen() {
               style={styles.debugButton}
             >
               <AppText variant="label" color="#FF9800">
-                Sync plan (debug)
+                Синхронизация (debug)
               </AppText>
             </TouchableOpacity>
 

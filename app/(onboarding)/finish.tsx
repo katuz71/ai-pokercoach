@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../providers/AuthProvider';
@@ -10,10 +10,16 @@ import { Database } from '../../types/database';
 
 export default function Finish() {
   const router = useRouter();
-  const { profile, completeOnboarding } = useApp();
+  const { profile, onboardingDone, completeOnboarding } = useApp();
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (onboardingDone) {
+      router.replace('/(tabs)/analyze');
+    }
+  }, [onboardingDone, router]);
 
   const onStart = async () => {
     if (!user) {
@@ -48,11 +54,8 @@ export default function Finish() {
 
       if (upsertError) throw upsertError;
 
-      // Complete onboarding in local state
+      // Complete onboarding in local state (navigation happens in useEffect when onboardingDone flips)
       await completeOnboarding();
-      
-      // Navigate to tabs
-      router.replace('/(tabs)/analyze');
     } catch (err: any) {
       console.error('[Finish] Failed to save profile:', err);
       setError(err.message ?? 'Ошибка сохранения профиля');

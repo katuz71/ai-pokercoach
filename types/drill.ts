@@ -45,10 +45,10 @@ export type TableDrillScenario = {
   };
   pot_bb: number;
   street: TableDrillStreet;
-  action_to_hero: {
-    type: ActionToHeroType;
-    size_bb: number;
-  };
+  /** Текст действия в сторону Hero (например "Villain поставил 6bb"). Из БД — строка. */
+  action_to_hero: string;
+  /** Размер ставки оппонента в bb. Используется для кнопки Колл и фишек на столе. */
+  villain_bet: number;
   correct_action?: TableDrillCorrectAction;
   explanation: string;
   /** action_decision (default) | raise_sizing */

@@ -343,6 +343,9 @@ serve(async (req) => {
   const focusCount = Math.floor(TARGET_COUNT * FOCUS_SHARE);
   const otherCount = TARGET_COUNT - focusCount;
 
+  const focusMix = await getFocusMix(supabaseService, userId, focusLeakTag, focusCount);
+  const drillTypes = buildFocusDrillTypes(focusMix);
+
   let used_fallback_seed: boolean;
   let leakTags: string[];
 
@@ -362,7 +365,7 @@ serve(async (req) => {
     status: 'due',
     due_at: dueAt,
     leak_tag: leakTags[i % leakTags.length],
-    drill_type: 'action_decision' as const,
+    drill_type: (drillTypes[i] ?? 'action_decision') as 'action_decision' | 'raise_sizing',
     repetition: 0,
     last_score: null as number | null,
     last_drill_id: null as null,
