@@ -544,8 +544,8 @@ export default function AnalyzeScreen() {
 
       {/* Floating CTA Button */}
       <View style={styles.ctaContainer}>
-        <PrimaryRoundButton onPress={() => router.push('/analyze/new')}>
-          <AppText variant="h2" color="#FFFFFF">+</AppText>
+        <PrimaryRoundButton size={56} onPress={() => router.push('/analyze/new')}>
+          <AppText variant="h1" color="#FFFFFF" style={styles.ctaPlus}>+</AppText>
         </PrimaryRoundButton>
       </View>
 
@@ -831,6 +831,11 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 32,
     right: 20,
+  },
+  ctaPlus: {
+    fontSize: 44,
+    lineHeight: 48,
+    fontWeight: '200',
   },
   previewOverlay: {
     flex: 1,

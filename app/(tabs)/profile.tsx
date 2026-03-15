@@ -1,9 +1,9 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { CoachStyle } from '../../context/AppContext';
+import { CoachStyle } from '../../types/profile';
 import { useAuth } from '../../providers/AuthProvider';
 import { supabase } from '../../lib/supabase';
 import { ensureSession } from '../../lib/ensureSession';
@@ -40,7 +40,7 @@ const labelByStyle: Record<CoachStyle, string> = {
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, isAnonymous, linkAccount } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +68,35 @@ export default function ProfileScreen() {
   const [loadingMistakeReasons, setLoadingMistakeReasons] = useState(false);
   const [mistakeReasonsError, setMistakeReasonsError] = useState<string | null>(null);
 
+  // Account linking (anonymous → email/password)
+  const [linkEmail, setLinkEmail] = useState('');
+  const [linkPassword, setLinkPassword] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkLoading, setLinkLoading] = useState(false);
+
+  const handleLinkAccount = async () => {
+    const email = linkEmail.trim();
+    const password = linkPassword;
+    if (!email || !password) {
+      setLinkError('Введите email и пароль');
+      return;
+    }
+    setLinkError(null);
+    setLinkLoading(true);
+    try {
+      await linkAccount(email, password);
+      setLinkEmail('');
+      setLinkPassword('');
+      Alert.alert('Готово', 'Аккаунт успешно привязан! Пожалуйста, проверьте почту для подтверждения.');
+    } catch (err: any) {
+      const msg = err?.message ?? 'Не удалось привязать аккаунт';
+      setLinkError(msg);
+      Alert.alert('Ошибка', msg);
+    } finally {
+      setLinkLoading(false);
+    }
+  };
+
   // Sync action plan with recent activity
   const syncActionPlan = async () => {
     if (!user) return;
@@ -93,7 +122,9 @@ export default function ProfileScreen() {
         console.log('[Profile] No action plan to sync');
         return;
       }
+      const msg = err?.message ?? 'Ошибка синхронизации плана';
       console.error('[Profile] Failed to sync action plan:', err);
+      Alert.alert('Ошибка', msg);
     }
   };
 
@@ -111,6 +142,8 @@ export default function ProfileScreen() {
         .eq('user_id', user.id)
         .lte('period_start', today)
         .gte('period_end', today)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle() as { 
           data: { 
             id: string; 
@@ -139,9 +172,14 @@ export default function ProfileScreen() {
 
         // Sync will update items in state directly - no additional DB query
         await syncActionPlan();
+      } else {
+        // No current plan found
+        setActionPlan(null);
       }
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка загрузки плана';
       console.error('[Profile] Failed to load action plan:', err);
+      Alert.alert('Ошибка', msg);
     }
   };
 
@@ -179,8 +217,10 @@ export default function ProfileScreen() {
         .slice(0, 3);
       setMistakeReasons7d(top3);
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка загрузки';
       console.error('[Profile] Failed to load mistake reasons:', err);
-      setMistakeReasonsError(err?.message ?? 'Ошибка загрузки');
+      setMistakeReasonsError(msg);
+      Alert.alert('Ошибка', msg);
     } finally {
       setLoadingMistakeReasons(false);
     }
@@ -224,8 +264,10 @@ export default function ProfileScreen() {
         setProfile(data);
       }
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка загрузки профиля';
       console.error('[Profile] Failed to load profile:', err);
-      setError(err.message ?? 'Ошибка загрузки профиля');
+      setError(msg);
+      Alert.alert('Ошибка', msg);
     } finally {
       setLoading(false);
     }
@@ -254,7 +296,9 @@ export default function ProfileScreen() {
         setDailyCheckin(data.message as DailyCheckin);
       }
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка загрузки чек-ина';
       console.error('[Profile] Failed to load today checkin:', err);
+      Alert.alert('Ошибка', msg);
     }
   };
 
@@ -305,7 +349,9 @@ export default function ProfileScreen() {
 
       setHasActivityToday(hasActivity);
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка проверки активности';
       console.error('[Profile] Failed to check today activity:', err);
+      Alert.alert('Ошибка', msg);
     } finally {
       setLoadingActivity(false);
     }
@@ -331,12 +377,15 @@ export default function ProfileScreen() {
 
       setDailyCheckin(data as DailyCheckin);
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка генерации чек-ина';
       console.error('[Profile] Failed to generate checkin:', err);
       // Handle session creation failure
       if (err?.message === 'Failed to create session') {
         setCheckinError('Не удалось создать сессию. Перезапусти приложение.');
+        Alert.alert('Ошибка', 'Не удалось создать сессию. Перезапусти приложение.');
       } else {
-        setCheckinError(err.message ?? 'Ошибка генерации чек-ина');
+        setCheckinError(msg);
+        Alert.alert('Ошибка', msg);
       }
     } finally {
       setLoadingCheckin(false);
@@ -357,13 +406,15 @@ export default function ProfileScreen() {
 
       setLeakSummary(data.summary);
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка загрузки анализа';
       console.error('[Profile] summarize invoke error raw:', err);
-
       // Handle session creation failure
       if (err?.message === 'Failed to create session') {
         setLeakError('Не удалось создать сессию. Перезапусти приложение.');
+        Alert.alert('Ошибка', 'Не удалось создать сессию. Перезапусти приложение.');
       } else {
-        setLeakError(err.message ?? 'Ошибка загрузки анализа');
+        setLeakError(msg);
+        Alert.alert('Ошибка', msg);
       }
     } finally {
       setLoadingLeaks(false);
@@ -383,16 +434,21 @@ export default function ProfileScreen() {
 
       setActionPlan(data as ActionPlanResponse);
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка генерации плана';
       console.error('[Profile] generate action plan error:', err);
 
       if (err?.message === 'Failed to create session') {
         setActionPlanError('Не удалось создать сессию. Перезапусти приложение.');
+        Alert.alert('Ошибка', 'Не удалось создать сессию. Перезапусти приложение.');
       } else if (err?.message?.includes('no_leaks_found')) {
         setActionPlanError('Недостаточно данных. Сделай 3+ разбора.');
+        Alert.alert('Ошибка', 'Недостаточно данных. Сделай 3+ разбора.');
       } else if (err?.message?.includes('plan_not_found') || err?.message?.includes('404')) {
         setActionPlanError('План не найден (404)');
+        Alert.alert('Ошибка', 'План не найден (404)');
       } else {
-        setActionPlanError(err.message ?? 'Ошибка генерации плана');
+        setActionPlanError(msg);
+        Alert.alert('Ошибка', msg);
       }
     } finally {
       setLoadingActionPlan(false);
@@ -424,7 +480,9 @@ export default function ProfileScreen() {
         await loadCurrentActionPlan();
       }
     } catch (err: any) {
+      const msg = err?.message ?? 'Ошибка обновления плана';
       console.error('[Profile] Failed to update action plan:', err);
+      Alert.alert('Ошибка', msg);
       // Revert on error
       await loadCurrentActionPlan();
     }
@@ -463,6 +521,69 @@ export default function ProfileScreen() {
         <View style={styles.container}>
           <AppText variant="h2">Профиль</AppText>
 
+          {/* Account: anonymous → link email/password, or signed-in → email + sign out */}
+          <Card style={styles.section}>
+            {isAnonymous ? (
+              <>
+                <AppText variant="h3" style={styles.sectionTitle}>Сохранить прогресс</AppText>
+                <AppText variant="body" style={styles.sectionDescription}>
+                  Привяжите email и пароль, чтобы сохранить данные на всех устройствах.
+                </AppText>
+                <TextInput
+                  style={styles.accountInput}
+                  placeholder="Email"
+                  placeholderTextColor="#6B7280"
+                  value={linkEmail}
+                  onChangeText={setLinkEmail}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                />
+                <TextInput
+                  style={styles.accountInput}
+                  placeholder="Пароль"
+                  placeholderTextColor="#6B7280"
+                  value={linkPassword}
+                  onChangeText={setLinkPassword}
+                  secureTextEntry
+                />
+                {linkError != null && (
+                  <AppText variant="body" color="#FF9800" style={styles.accountError}>
+                    {linkError}
+                  </AppText>
+                )}
+                <TouchableOpacity
+                  onPress={handleLinkAccount}
+                  style={[styles.accountButton, linkLoading && styles.accountButtonDisabled]}
+                  disabled={linkLoading}
+                >
+                  {linkLoading ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <AppText variant="label" color="#FFFFFF" style={styles.accountButtonText}>
+                      Привязать аккаунт
+                    </AppText>
+                  )}
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <AppText variant="h3" style={styles.sectionTitle}>Аккаунт</AppText>
+                <AppText variant="body" style={styles.sectionValue}>
+                  {user?.email ?? '—'}
+                </AppText>
+                <TouchableOpacity
+                  onPress={() => supabase.auth.signOut()}
+                  style={styles.signOutButton}
+                >
+                    <AppText variant="label" color="#FFFFFF" style={styles.signOutButtonText}>
+                      Выйти
+                    </AppText>
+                </TouchableOpacity>
+              </>
+            )}
+          </Card>
+
           {/* AI Coach Banner — entry point to chat with coach */}
           <Card style={styles.coachBanner}>
             <AppText variant="h3" style={styles.coachBannerTitle}>
@@ -481,6 +602,23 @@ export default function ProfileScreen() {
               </AppText>
             </TouchableOpacity>
           </Card>
+
+          {/* Upgrade to PRO */}
+          <TouchableOpacity
+            onPress={() => router.push('/paywall')}
+            style={styles.upgradeCard}
+            activeOpacity={0.9}
+          >
+            <View style={styles.upgradeContent}>
+              <AppText variant="h3" style={styles.upgradeTitle}>
+                Upgrade to PRO
+              </AppText>
+              <AppText variant="body" style={styles.upgradeDescription}>
+                Снимите ограничения — бесплатно через Покерок или по подписке
+              </AppText>
+            </View>
+            <AppText variant="h2" color="#F59E0B">→</AppText>
+          </TouchableOpacity>
 
           {/* Daily Check-in Section */}
           <Card style={styles.checkinSection}>
@@ -770,7 +908,7 @@ export default function ProfileScreen() {
               </AppText>
             </TouchableOpacity>
 
-            {actionPlan && (
+            {actionPlan ? (
               <View style={styles.actionPlanContainer}>
                 {/* Focus Tag Badge */}
                 {actionPlan.focus_tag && (
@@ -815,6 +953,12 @@ export default function ProfileScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
+              </View>
+            ) : (
+              <View style={styles.noActionPlanContainer}>
+                <AppText variant="body" style={styles.noActionPlanText}>
+                  План ещё не создан. Сгенерируй первый план, чтобы начать.
+                </AppText>
               </View>
             )}
 
@@ -954,6 +1098,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   noCheckinText: {
+    fontSize: 14,
+    opacity: 0.7,
+  },
+  noActionPlanContainer: {
+    paddingVertical: 12,
+  },
+  noActionPlanText: {
     fontSize: 14,
     opacity: 0.7,
   },
@@ -1271,6 +1422,66 @@ const styles = StyleSheet.create({
   },
   coachBannerButtonText: {
     fontSize: 15,
+    fontWeight: '700',
+  },
+  upgradeCard: {
+    backgroundColor: '#1A1510',
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  upgradeContent: {
+    flex: 1,
+    gap: 4,
+  },
+  upgradeTitle: {
+    color: '#F59E0B',
+  },
+  upgradeDescription: {
+    color: '#A7B0C0',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  accountInput: {
+    backgroundColor: '#0A0E14',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    color: '#FFFFFF',
+    fontSize: 16,
+    marginTop: 8,
+  },
+  accountError: {
+    marginTop: 8,
+  },
+  accountButton: {
+    backgroundColor: '#4C9AFF',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  accountButtonDisabled: {
+    opacity: 0.6,
+  },
+  accountButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  signOutButton: {
+    backgroundColor: '#E53935',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  signOutButtonText: {
+    fontSize: 14,
     fontWeight: '700',
   },
 });

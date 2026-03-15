@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { requireUserClient, AuthError } from '../_shared/userAuth.ts';
 import { enforceAllowedLeakTag } from '../_shared/leaks.ts';
+import { generateEmbedding } from '../_shared/openai.ts';
 
 type CoachChatBody = {
   thread_id: string | null;
@@ -48,6 +49,9 @@ export type CoachChatEvidence = {
   message_ids: string[];
   tags: string[];
 };
+
+/** Max characters for conversation history in system prompt to avoid token limits and reduce cost. */
+const MAX_CONTEXT_CHARS = 6000;
 
 const LEAK_CLAIM_TRIGGERS = [
   /ты часто/gi,
@@ -170,30 +174,6 @@ function buildSystemPrompt(
   return system;
 }
 
-async function getEmbedding(openAiKey: string, text: string): Promise<number[]> {
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openAiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-ada-002',
-      input: text.slice(0, 8000),
-    }),
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Embedding failed: ${errText}`);
-  }
-  const data = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
-  const embedding = data.data?.[0]?.embedding;
-  if (!Array.isArray(embedding) || embedding.length !== 1536) {
-    throw new Error('Invalid embedding response');
-  }
-  return embedding;
-}
-
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -234,6 +214,33 @@ serve(async (req) => {
     } else {
       if (!message) {
         return json({ error: 'message_required', detail: 'message is required and must be non-empty' }, 400);
+      }
+    }
+
+    // Freemium limit: free users max 5 user messages per day (UTC); only for new messages, not continue
+    if (!isContinue) {
+      const { data: profile } = await supabaseUser
+        .from('profiles')
+        .select('subscription_tier')
+        .eq('id', userId)
+        .maybeSingle();
+      const tier = (profile as { subscription_tier?: string | null } | null)?.subscription_tier ?? null;
+      if (tier === 'free' || tier === null) {
+        const d = new Date();
+        const startOfDayUTC = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+        const startOfDayISO = startOfDayUTC.toISOString();
+        const { count, error: countError } = await supabaseUser
+          .from('chat_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .eq('role', 'user')
+          .gte('created_at', startOfDayISO);
+        if (!countError && (count ?? 0) >= 5) {
+          return json(
+            { error: 'limit_reached', detail: 'Достигнут лимит сообщений на сегодня. Перейдите на PRO.' },
+            403
+          );
+        }
       }
     }
 
@@ -341,7 +348,21 @@ serve(async (req) => {
       last20 = (recentMessages ?? []).slice(-20) as ChatMessageRow[];
     }
 
-    const conversationBlock = last20
+    // Trim conversation to MAX_CONTEXT_CHARS: newest-to-oldest, always include last user message, then reverse to chronological.
+    const lastUserMessage = last20.filter((m) => m.role === 'user').pop() ?? null;
+    const reversed = [...last20].reverse();
+    const trimmed: ChatMessageRow[] = [];
+    let totalChars = 0;
+    for (const m of reversed) {
+      const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`;
+      const lineCost = (trimmed.length ? 1 : 0) + line.length;
+      const wouldExceed = totalChars + lineCost > MAX_CONTEXT_CHARS;
+      if (wouldExceed && m !== lastUserMessage) continue;
+      trimmed.push(m);
+      totalChars += lineCost;
+    }
+    trimmed.reverse();
+    const conversationBlock = trimmed
       .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n');
 
@@ -394,7 +415,7 @@ serve(async (req) => {
     const evidence: CoachChatEvidence = { memory_ids: [], message_ids: [], tags: [] };
     try {
       if (textForEmbedding) {
-        const embedding = await getEmbedding(openAiKey, textForEmbedding.slice(0, 8000));
+        const embedding = await generateEmbedding(textForEmbedding.slice(0, 8000), openAiKey);
         const { data: memories, error: rpcError } = await supabaseUser.rpc('match_coach_memory', {
           query_embedding: embedding,
           match_threshold: 0.5,

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Modal,
   Pressable,
@@ -383,8 +384,15 @@ export default function TrainScreen() {
     if (fromState) return fromState;
     await ensureSession();
     console.log('ensureQueueRowForScenario: start');
-    const boot = await callEdge('ai-bootstrap-drill-queue', {});
-    console.log('ensureQueueRowForScenario: bootstrap', JSON.stringify(boot ?? null));
+    try {
+      const boot = await callEdge('ai-bootstrap-drill-queue', {});
+      console.log('ensureQueueRowForScenario: bootstrap', JSON.stringify(boot ?? null));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Ошибка загрузки очереди тренировок';
+      console.warn('ensureQueueRowForScenario: bootstrap failed', e);
+      Alert.alert('Ошибка', msg);
+      return null;
+    }
     let fresh: DrillQueueRow[] = [];
     for (let i = 0; i < 3; i++) {
       fresh = await fetchDueDrillsLocal(5);
@@ -418,7 +426,10 @@ export default function TrainScreen() {
       console.log('refreshTrain: bootstrap result', JSON.stringify(boot ?? null));
       const data = await loadDueDrills();
       console.log('refreshTrain: dueDrills loaded', JSON.stringify({ count: (data ?? []).length }));
-    } catch (e) { } finally {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Ошибка обновления тренировки';
+      Alert.alert('Ошибка', msg);
+    } finally {
       refreshInProgressRef.current = false;
     }
   }, []);
@@ -473,7 +484,14 @@ export default function TrainScreen() {
     if (!resolvedRow) {
       console.log('startDrill no row, bootstrapping queue...');
       await ensureSession();
-      await callEdge('ai-bootstrap-drill-queue', {});
+      try {
+        await callEdge('ai-bootstrap-drill-queue', {});
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Ошибка загрузки очереди';
+        Alert.alert('Ошибка', msg);
+        setError(msg);
+        return;
+      }
       const fresh = await loadDueDrills();
       let first = fresh?.[0] ?? null;
       if (!first) {
@@ -517,7 +535,13 @@ export default function TrainScreen() {
           console.log('startDrill no next row, bootstrapping once...', { answeredId: lastAnsweredIdRef.current, count: fresh.length });
 
           await ensureSession();
-          await callEdge('ai-bootstrap-drill-queue', {});
+          try {
+            await callEdge('ai-bootstrap-drill-queue', {});
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'Ошибка загрузки очереди';
+            Alert.alert('Ошибка', msg);
+            return;
+          }
           const fresh2 = await loadDueDrills();
           let next2 = fresh2.find(r => r.id !== lastAnsweredIdRef.current) ?? null;
 
@@ -719,6 +743,7 @@ export default function TrainScreen() {
       const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : null;
       const message = e?.message ?? String(e);
       console.log('submit failed', { drillQueueId, statusCode, message, raw: e });
+      Alert.alert('Ошибка', message);
 
       if (isSessionAuthError(statusCode, message)) {
         console.log('submit retrying once...', { drillQueueId });
@@ -762,8 +787,10 @@ export default function TrainScreen() {
         } catch (e2: any) {
           const statusMatch2 = (e2?.message ?? '').match(/\s(\d{3}):/);
           const statusCode2 = statusMatch2 ? parseInt(statusMatch2[1], 10) : null;
-          console.log('submit failed', { drillQueueId, statusCode: statusCode2, message: e2?.message ?? String(e2), raw: e2 });
-          setError(e2?.message ?? String(e2));
+          const msg2 = e2?.message ?? String(e2);
+          console.log('submit failed', { drillQueueId, statusCode: statusCode2, message: msg2, raw: e2 });
+          Alert.alert('Ошибка', msg2);
+          setError(msg2);
           doRecovery();
           return;
         }

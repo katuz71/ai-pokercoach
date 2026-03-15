@@ -1,12 +1,15 @@
 import React, { useRef } from 'react';
 import { Animated, Pressable, StyleSheet } from 'react-native';
 
+const DEFAULT_SIZE = 84;
+
 type Props = {
   onPress: () => void;
   children?: React.ReactNode;
+  size?: number;
 };
 
-export function PrimaryRoundButton({ onPress, children }: Props) {
+export function PrimaryRoundButton({ onPress, children, size = DEFAULT_SIZE }: Props) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = () => {
@@ -27,9 +30,15 @@ export function PrimaryRoundButton({ onPress, children }: Props) {
     }).start();
   };
 
+  const buttonStyle = {
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+  };
+
   return (
     <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={onPress}>
-      <Animated.View style={[styles.button, { transform: [{ scale: scaleAnim }] }]}>
+      <Animated.View style={[styles.button, buttonStyle, { transform: [{ scale: scaleAnim }] }]}>
         {children}
       </Animated.View>
     </Pressable>
@@ -38,9 +47,6 @@ export function PrimaryRoundButton({ onPress, children }: Props) {
 
 const styles = StyleSheet.create({
   button: {
-    width: 84,
-    height: 84,
-    borderRadius: 42,
     backgroundColor: '#E53935',
     justifyContent: 'center',
     alignItems: 'center',

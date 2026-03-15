@@ -1,16 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
-export type CoachStyle = 'toxic' | 'mental' | 'math';
-
-export type PlayerProfile = {
-  skillLevel: 'beginner' | 'intermediate' | 'advanced';
-  playsForMoney: 'no' | 'sometimes' | 'regular' | 'income';
-  gameTypes: Array<'mtt' | 'cash' | 'sng' | 'live'>;
-  goals: string[];
-  weakAreas: string[];
-  coachStyle: CoachStyle;
-};
+import { supabase } from '../lib/supabase';
+import type { CoachStyle, PlayerProfile } from '../types/profile';
 
 type AppState = {
   isHydrated: boolean;
@@ -24,6 +16,34 @@ type AppState = {
 
 const KEY_PROFILE = 'poker_ai.profile.v1';
 const KEY_ONBOARDING = 'poker_ai.onboarding_done.v1';
+
+function profileToRow(p: PlayerProfile) {
+  return {
+    skill_level: p.skillLevel,
+    plays_for_money: p.playsForMoney,
+    game_types: p.gameTypes,
+    goals: p.goals,
+    weak_areas: p.weakAreas,
+    coach_style: p.coachStyle,
+    subscription_tier: p.subscriptionTier ?? 'free',
+    pokerok_id: p.pokerokId ?? null,
+  };
+}
+
+async function syncProfileToSupabase(p: PlayerProfile): Promise<void> {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase
+      .from('profiles')
+      // @ts-expect-error - Supabase generics infer never for table; payload matches profiles.Insert
+      .upsert({ id: user.id, ...profileToRow(p) }, { onConflict: 'id' });
+  } catch (e) {
+    console.error('[AppContext] Failed to sync profile to Supabase', e);
+  }
+}
 
 const Ctx = createContext<AppState | null>(null);
 
@@ -50,6 +70,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setProfile = useCallback(async (p: PlayerProfile) => {
     setProfileState(p);
     await AsyncStorage.setItem(KEY_PROFILE, JSON.stringify(p));
+    await syncProfileToSupabase(p);
   }, []);
 
   const setCoachStyle = useCallback(
@@ -61,11 +82,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         goals: [],
         weakAreas: [],
         coachStyle: 'mental',
+        subscriptionTier: 'free',
       }) satisfies PlayerProfile;
 
       const updated: PlayerProfile = { ...next, coachStyle: s };
       setProfileState(updated);
       await AsyncStorage.setItem(KEY_PROFILE, JSON.stringify(updated));
+      await syncProfileToSupabase(updated);
     },
     [profile]
   );
@@ -105,3 +128,5 @@ export function useApp() {
   if (!v) throw new Error('useApp must be used inside <AppProvider>');
   return v;
 }
+
+export type { CoachStyle, PlayerProfile } from '../types/profile';

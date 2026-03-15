@@ -12,6 +12,8 @@ export type Database = {
           goals: string[] | null;
           weak_areas: string[] | null;
           coach_style: string | null;
+          subscription_tier: 'free' | 'pro' | 'affiliate_pro' | null;
+          pokerok_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -23,6 +25,8 @@ export type Database = {
           goals?: string[] | null;
           weak_areas?: string[] | null;
           coach_style?: string | null;
+          subscription_tier?: 'free' | 'pro' | 'affiliate_pro' | null;
+          pokerok_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -34,6 +38,8 @@ export type Database = {
           goals?: string[] | null;
           weak_areas?: string[] | null;
           coach_style?: string | null;
+          subscription_tier?: 'free' | 'pro' | 'affiliate_pro' | null;
+          pokerok_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };

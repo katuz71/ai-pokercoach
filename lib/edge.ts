@@ -3,6 +3,31 @@ import { supabase } from './supabase';
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 
+const NETWORK_ERROR_MESSAGE = 'Нет подключения к интернету. Проверьте сеть и попробуйте снова.';
+
+/** Error code thrown when server returns 403 with error: 'limit_reached' (freemium limit). */
+export const LIMIT_REACHED = 'LIMIT_REACHED';
+
+export function isLimitReachedError(e: unknown): boolean {
+  return e instanceof Error && (e as Error & { code?: string }).code === LIMIT_REACHED;
+}
+
+/**
+ * Wraps fetch and converts network/connection failures into a user-friendly Russian error.
+ * Use this for all Edge Function requests so offline scenarios show a clear message.
+ */
+async function safeFetch(url: string, options: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, options);
+  } catch (e) {
+    // Typically TypeError for "Network request failed", "Failed to fetch", etc.
+    if (e instanceof TypeError || (e instanceof Error && /network|fetch|connection/i.test(e.message))) {
+      throw new Error(NETWORK_ERROR_MESSAGE);
+    }
+    throw e;
+  }
+}
+
 /**
  * Call Supabase Edge Function with custom x-user-jwt header to bypass legacy JWT verification.
  * 
@@ -21,8 +46,8 @@ export async function callEdge(fnName: string, body: any): Promise<any> {
 
   // Make fetch request with custom headers
   const url = `${SUPABASE_URL}/functions/v1/${fnName}`;
-  
-  const res = await fetch(url, {
+
+  const res = await safeFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -35,6 +60,19 @@ export async function callEdge(fnName: string, body: any): Promise<any> {
 
   if (!res.ok) {
     const text = await res.text();
+    if (res.status === 403) {
+      try {
+        const payload = JSON.parse(text) as { error?: string; detail?: string };
+        if (payload?.error === 'limit_reached') {
+          const err = new Error(payload.detail ?? 'Limit reached') as Error & { code?: string };
+          err.code = LIMIT_REACHED;
+          throw err;
+        }
+      } catch (e) {
+        if (e instanceof Error && (e as Error & { code?: string }).code === LIMIT_REACHED) throw e;
+        // fall through to generic throw
+      }
+    }
     throw new Error(`Edge ${fnName} ${res.status}: ${text}`);
   }
 
@@ -69,7 +107,7 @@ export async function callEdgeOcr(formData: FormData): Promise<OcrSuccess> {
 
   const url = `${SUPABASE_URL}/functions/v1/ai-ocr-hand`;
 
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: 'POST',
     headers: {
       'apikey': SUPABASE_ANON_KEY,
@@ -144,7 +182,7 @@ export async function callParseHandText(
 
   const url = `${SUPABASE_URL}/functions/v1/ai-parse-hand-text`;
 
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

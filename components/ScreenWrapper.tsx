@@ -3,7 +3,7 @@ import { StyleSheet, StyleProp, ViewStyle } from 'react-native';
 import { SafeAreaView, Edge } from 'react-native-safe-area-context';
 
 type Props = {
-  children: React.ReactNode;
+  children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   /** Safe area edges to apply. Default: all. Use ['top','left','right'] for tab screens to avoid black bar above tab bar. */
   edges?: Edge[];

@@ -6,7 +6,9 @@ type AuthContextType = {
   user: User | null;
   session: Session | null;
   loading: boolean;
+  isAnonymous: boolean;
   signInAnonymously: () => Promise<void>;
+  linkAccount: (email: string, password: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -24,6 +26,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(data.session);
     } catch (error) {
       console.error('[AuthProvider] Anonymous sign-in failed:', error);
+    }
+  };
+
+  const linkAccount = async (email: string, password: string) => {
+    try {
+      const { data: updateData, error: updateError } = await supabase.auth.updateUser({ 
+        email, 
+        password 
+      });
+      
+      if (updateError) throw updateError;
+
+      // Force session refresh
+      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+      
+      if (refreshError) throw refreshError;
+
+      // Explicitly update the React state to trigger a re-render
+      if (refreshData.session?.user) {
+        setUser(refreshData.session.user);
+        setSession(refreshData.session);
+      } else if (updateData.user) {
+        setUser(updateData.user);
+      }
+    } catch (error) {
+      console.error('[AuthProvider] Account linking failed:', error);
+      throw error;
     }
   };
 
@@ -52,8 +81,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
+  const isAnonymous = user?.is_anonymous ?? false;
+
   return (
-    <AuthContext.Provider value={{ user, session, loading, signInAnonymously }}>
+    <AuthContext.Provider value={{ user, session, loading, isAnonymous, signInAnonymously, linkAccount }}>
       {children}
     </AuthContext.Provider>
   );

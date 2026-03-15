@@ -2,7 +2,7 @@
   "expo": {
     "name": "Poker AI Coach",
     "slug": "poker-ai-coach",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "scheme": "aipokercoach",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -12,22 +12,23 @@
       "resizeMode": "contain",
       "backgroundColor": "#0B0E14"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pokeraicoach.app",
+      "buildNumber": "1"
     },
     "android": {
+      "package": "com.pokeraicoach.app",
+      "versionCode": 3,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      },
-      "package": "com.pokeraicoach.app",
-      "edgeToEdgeEnabled": true
+      }
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
+    "extra": {
+      "eas": {
+        "projectId": "889dcd28-d650-4300-ad6e-f042b0cba1a0"
+      }
     },
     "plugins": [
       "expo-router",
@@ -37,14 +38,7 @@
           "android": {
             "kotlinVersion": "2.1.20",
             "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "buildToolsVersion": "35.0.0",
-            "ndkVersion": "27.1.12297006",
-            "packagingOptions": {
-              "jniLibs": {
-                "useLegacyPackaging": false
-              }
-            }
+            "targetSdkVersion": 35
           }
         }
       ]

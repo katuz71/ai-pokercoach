@@ -1,7 +1,8 @@
 import { useRouter } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
-import { PlayerProfile, useApp } from '../../context/AppContext';
+import { useApp } from '../../context/AppContext';
+import type { PlayerProfile } from '../../types/profile';
 import { ScreenWrapper } from '../../components/ScreenWrapper';
 import { AppText } from '../../components/AppText';
 

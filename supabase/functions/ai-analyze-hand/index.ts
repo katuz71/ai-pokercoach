@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { enforceAllowedLeakTag } from '../_shared/leaks.ts';
 import { requireUserClient, AuthError } from '../_shared/userAuth.ts';
+import { generateEmbedding } from '../_shared/openai.ts';
 
 type CoachStyle = 'TOXIC' | 'MENTAL' | 'MATH';
 
@@ -180,31 +181,6 @@ function getTextForLLM(input: HandInput): ResolvedPrompt {
   // legacy: build from flat fields
   const text = buildUserPrompt(input as HandInputLegacy);
   return { text, mode: 'legacy' };
-}
-
-// Generate embedding using OpenAI
-async function generateEmbedding(text: string, openAiKey: string): Promise<number[]> {
-  const embeddingModel = 'text-embedding-3-small';
-  
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openAiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: embeddingModel,
-      input: text,
-    }),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Embedding generation failed: ${errText}`);
-  }
-
-  const data = await response.json();
-  return data.data[0].embedding;
 }
 
 // Retrieve top K similar memories from coach_memory
@@ -527,6 +503,30 @@ serve(async (req) => {
     // Authenticate user and get user-scoped client
     const { userId, supabaseUser } = await requireUserClient(req);
 
+    // Freemium limit: free users max 3 hand analyses per day (UTC)
+    const { data: profile } = await supabaseUser
+      .from('profiles')
+      .select('subscription_tier')
+      .eq('id', userId)
+      .maybeSingle();
+    const tier = (profile as { subscription_tier?: string | null } | null)?.subscription_tier ?? null;
+    if (tier === 'free' || tier === null) {
+      const d = new Date();
+      const startOfDayUTC = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      const startOfDayISO = startOfDayUTC.toISOString();
+      const { count, error: countError } = await supabaseUser
+        .from('hand_analyses')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .gte('created_at', startOfDayISO);
+      if (!countError && (count ?? 0) >= 3) {
+        return json(
+          { error: 'limit_reached', detail: 'Достигнут лимит разборов на сегодня. Перейдите на PRO.' },
+          403
+        );
+      }
+    }
+
     // Parse request body
     const body = (await req.json()) as HandAnalysisRequest;
     if (!body.input || !body.coach_style) {
@@ -675,6 +675,7 @@ serve(async (req) => {
             strict: true,
           },
         },
+        temperature: 0.2,
         user: userId,
       }),
     });

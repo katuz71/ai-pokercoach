@@ -23,7 +23,7 @@ import type { Voice } from 'expo-speech';
 import { ScreenWrapper } from '../../components/ScreenWrapper';
 import { AppText } from '../../components/AppText';
 import { Card } from '../../components/Card';
-import { callEdge } from '../../lib/edge';
+import { callEdge, isLimitReachedError } from '../../lib/edge';
 
 /** One item from coach_memory (frontend select). similarity optional; confidence from recency. */
 type MemoryItem = {
@@ -379,7 +379,11 @@ export default function CoachChatScreen() {
           router.setParams({ leakTag: undefined });
         }
       } catch (e) {
-        if (!cancelled) console.warn('[CoachChat] Load thread failed:', e);
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : 'Не удалось загрузить диалог';
+          console.warn('[CoachChat] Load thread failed:', e);
+          Alert.alert('Ошибка', msg);
+        }
       } finally {
         if (!cancelled) setLoadingThread(false);
       }
@@ -526,7 +530,9 @@ export default function CoachChatScreen() {
     try {
       await callEdge('ai-sync-action-plan', {});
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Ошибка синхронизации';
       console.warn('[CoachChat] ai-sync-action-plan failed:', e);
+      Alert.alert('Ошибка', msg);
     }
     await loadTodayShortcuts();
   }, [loadTodayShortcuts]);
@@ -577,7 +583,9 @@ export default function CoachChatScreen() {
       }
       setHasMoreMessages(rawList.length === 30);
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Не удалось загрузить сообщения';
       console.warn('[CoachChat] Load older failed:', e);
+      Alert.alert('Ошибка', msg);
     } finally {
       setLoadingOlder(false);
     }
@@ -835,6 +843,15 @@ export default function CoachChatScreen() {
         try {
           const text = await response.text();
           const json = JSON.parse(text) as { error?: string; detail?: string };
+          if (response.status === 403 && json?.error === 'limit_reached') {
+            const detail = json.detail ?? 'Достигнут лимит на сегодня. Перейдите на PRO.';
+            Alert.alert('Лимит достигнут', detail, [
+              { text: 'OK', onPress: () => router.push('/paywall') },
+            ]);
+            setLoading(false);
+            setLoadingContext(false);
+            return;
+          }
           errMsg = [json.detail, json.error].filter(Boolean).join(' — ') || (text ? text.slice(0, 200) : errMsg);
         } catch {
           // non-JSON or empty body already handled in errMsg
@@ -1057,6 +1074,15 @@ export default function CoachChatScreen() {
     } catch (err: unknown) {
       activeAbortControllerRef.current = null;
       setIsStreaming(false);
+      if (isLimitReachedError(err)) {
+        const msg = err instanceof Error ? err.message : 'Достигнут лимит сообщений на сегодня. Перейдите на PRO.';
+        Alert.alert('Лимит достигнут', msg, [
+          { text: 'OK', onPress: () => router.push('/paywall') },
+        ]);
+        setLoading(false);
+        setLoadingContext(false);
+        return;
+      }
       const isUserStop =
         err instanceof Error && err.name === 'AbortError' && userDidStopRef.current;
       userDidStopRef.current = false;
@@ -1076,6 +1102,7 @@ export default function CoachChatScreen() {
               : 'Ошибка отправки сообщения';
         console.error('[CoachChat] Failed to send message:', err);
         fail(msg, !isRetry && !isContinue);
+        Alert.alert('Ошибка', msg);
       }
     }
   };
@@ -1130,7 +1157,9 @@ export default function CoachChatScreen() {
       console.log('[VoiceInput] Recording started');
     } catch (err: any) {
       console.error('[VoiceInput] Failed to start recording:', err);
-      setError('Не удалось начать запись: ' + err.message);
+      const msg = err?.message ?? 'Не удалось начать запись';
+      setError('Не удалось начать запись: ' + msg);
+      Alert.alert('Ошибка', msg);
     }
   };
 
@@ -1220,7 +1249,9 @@ export default function CoachChatScreen() {
       }
     } catch (err: unknown) {
       console.error('[VoiceInput] Failed to process recording:', err);
-      setError('Ошибка обработки записи: ' + (err instanceof Error ? err.message : String(err)));
+      const msg = err instanceof Error ? err.message : 'Ошибка обработки записи';
+      setError('Ошибка обработки записи: ' + msg);
+      Alert.alert('Ошибка', msg);
     } finally {
       setIsRecording(false);
       setRecording(null);

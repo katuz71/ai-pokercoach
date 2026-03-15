@@ -1,7 +1,8 @@
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { StyleSheet, TouchableOpacity, View } from 'react-native';
-import { CoachStyle, useApp } from '../../context/AppContext';
+import { useApp } from '../../context/AppContext';
+import type { CoachStyle } from '../../types/profile';
 import { ScreenWrapper } from '../../components/ScreenWrapper';
 import { AppText } from '../../components/AppText';
 import { Card } from '../../components/Card';

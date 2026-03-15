@@ -1,15 +1,7 @@
 import { supabase } from './supabase';
+import type { PlayerProfile } from '../types/profile';
 
-export type CoachStyle = 'toxic' | 'mental' | 'math';
-
-export type PlayerProfile = {
-  skillLevel: 'beginner' | 'intermediate' | 'advanced';
-  playsForMoney: 'no' | 'sometimes' | 'regular' | 'income';
-  gameTypes: Array<'mtt' | 'cash' | 'sng' | 'live'>;
-  goals: string[];
-  weakAreas: string[];
-  coachStyle: CoachStyle;
-};
+export type { CoachStyle, PlayerProfile } from '../types/profile';
 
 export type HandInput = {
   holeCards: string; // e.g. "As Kd" or "AKo"

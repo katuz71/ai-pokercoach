@@ -18,7 +18,7 @@ import { AppText } from '../../components/AppText';
 import { Card } from '../../components/Card';
 import { supabase } from '../../lib/supabase';
 import { ensureSession } from '../../lib/ensureSession';
-import { callEdge, callEdgeOcr, callEdgeParseHandText } from '../../lib/edge';
+import { callEdge, callEdgeOcr, callEdgeParseHandText, isLimitReachedError } from '../../lib/edge';
 import { CoachStyle } from '../../types/hand';
 import { Profile } from '../../types/database';
 
@@ -302,7 +302,9 @@ export default function QuickAnalyzeScreen() {
         );
         setError(null);
       } else {
-        setError(err?.message ?? 'Ошибка распознавания');
+        const msg = err?.message ?? 'Ошибка распознавания';
+        setError(msg);
+        Alert.alert('Ошибка', msg);
       }
     } finally {
       setOcrLoading(false);
@@ -357,7 +359,9 @@ export default function QuickAnalyzeScreen() {
         Alert.alert("Couldn't extract fields — use Text mode", result.error || 'unparseable');
       }
     } catch (err: any) {
-      setError(err?.message ?? 'Extract failed');
+      const msg = err?.message ?? 'Extract failed';
+      setError(msg);
+      Alert.alert('Ошибка', msg);
     } finally {
       setExtractLoading(false);
     }
@@ -461,13 +465,26 @@ export default function QuickAnalyzeScreen() {
     } catch (err: any) {
       console.error('[Analyze] invoke error raw:', err);
 
-      // Handle session creation failure
-      if (err?.message === 'Failed to create session') {
-        setError('Не удалось создать сессию. Перезапусти приложение.');
+      if (isLimitReachedError(err)) {
+        const msg = err?.message ?? 'Достигнут лимит разборов на сегодня. Перейдите на PRO.';
+        Alert.alert('Лимит достигнут', msg, [
+          { text: 'OK', onPress: () => router.push('/paywall') },
+        ]);
+        setError(null);
+        setLoading(false);
         return;
       }
 
-      setError(err?.message ?? 'Неизвестная ошибка');
+      // Handle session creation failure
+      if (err?.message === 'Failed to create session') {
+        setError('Не удалось создать сессию. Перезапусти приложение.');
+        Alert.alert('Ошибка', 'Не удалось создать сессию. Перезапусти приложение.');
+        return;
+      }
+
+      const msg = err?.message ?? 'Неизвестная ошибка';
+      setError(msg);
+      Alert.alert('Ошибка', msg);
     } finally {
       setLoading(false);
     }
